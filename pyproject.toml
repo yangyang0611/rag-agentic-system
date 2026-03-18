@@ -1,0 +1,13 @@
+[project]
+name = "rag-mcp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "chromadb>=1.5.5",
+    "httpx>=0.28.1",
+    "mcp>=1.26.0",
+    "sentence-transformers>=5.3.0",
+]
