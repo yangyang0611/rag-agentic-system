@@ -5,16 +5,20 @@ from sentence_transformers import SentenceTransformer
 import hashlib
 
 # 載入 embedding model（第一次會下載，之後 cache）
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 # 初始化 ChromaDB（存在本地 ./chroma_db 資料夾）
 client = chromadb.PersistentClient(path="./chroma_db")
-collection = client.get_or_create_collection("webpages")
+collection = client.get_or_create_collection(
+    "webpages",
+    metadata={"hnsw:space": "cosine"},
+)
 
 
 def fetch_webpage(url: str) -> str:
     """爬網頁，回傳純文字內容"""
-    response = httpx.get(url, timeout=15, follow_redirects=True)
+    headers = {"User-Agent": "rag-mcp/0.1 (educational project; httpx)"}
+    response = httpx.get(url, timeout=15, follow_redirects=True, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
 
     # 移除 script、style 等雜訊
