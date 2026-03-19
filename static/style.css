@@ -1,0 +1,235 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+  background: #0f0f0f;
+  color: #e0e0e0;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 40px 24px;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+
+header h1 {
+  font-size: 2.4rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6, #a78bfa);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 8px;
+}
+
+header p {
+  color: #666;
+  font-size: 14px;
+}
+
+.section {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+
+.section h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #888;
+  margin-bottom: 16px;
+}
+
+.input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+input[type="text"], input[type="file"] {
+  flex: 1;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #e0e0e0;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input[type="text"]:focus {
+  border-color: #6366f1;
+}
+
+input[type="file"] {
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+input[type="number"] {
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+  color: #e0e0e0;
+  font-size: 14px;
+  width: 70px;
+  text-align: center;
+  outline: none;
+}
+
+input[type="number"]:focus {
+  border-color: #6366f1;
+}
+
+button {
+  background: #6366f1;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  white-space: nowrap;
+}
+
+button:hover { background: #4f46e5; }
+button:active { transform: scale(0.97); }
+
+.btn-group {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.btn-secondary {
+  background: #2a2a2a;
+  color: #ccc;
+}
+.btn-secondary:hover { background: #333; }
+
+.btn-web {
+  background: #0ea5e9;
+}
+.btn-web:hover { background: #0284c7; }
+
+.btn-agent {
+  background: linear-gradient(135deg, #f59e0b, #ef4444);
+  color: white;
+}
+.btn-agent:hover { background: linear-gradient(135deg, #d97706, #dc2626); }
+
+.btn-hints {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-hint {
+  font-size: 11px;
+  color: #555;
+}
+
+.status-msg {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #8b8b8b;
+}
+
+.status-msg.success { color: #4ade80; }
+.status-msg.error { color: #f87171; }
+.status-msg.loading { color: #a78bfa; }
+
+#query-results {
+  margin-top: 20px;
+}
+
+.answer-card {
+  background: #1e1e2e;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 16px;
+  line-height: 1.7;
+}
+
+.answer-card.db { border-left: 3px solid #a78bfa; }
+.answer-card.web { border-left: 3px solid #0ea5e9; }
+
+.answer-card strong {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #888;
+  margin-bottom: 12px;
+}
+
+.answer-card p, .answer-card li, .answer-card div {
+  font-size: 14px;
+  color: #d0d0d0;
+}
+
+.result-card {
+  background: #151515;
+  border: 1px solid #252525;
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+
+.result-meta {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.result-meta a { color: #6366f1; text-decoration: none; }
+.result-meta a:hover { text-decoration: underline; }
+
+.result-content {
+  font-size: 13px;
+  color: #aaa;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+details {
+  margin-top: 12px;
+}
+
+summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #666;
+  padding: 8px 0;
+}
+
+summary:hover { color: #999; }
+
+.query-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.n-label {
+  font-size: 12px;
+  color: #666;
+}

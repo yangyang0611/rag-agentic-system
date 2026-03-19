@@ -2,179 +2,55 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>RAG MCP Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG MCP</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <style>
-    body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
-    h2 { margin-top: 40px; }
-    input, textarea { width: 100%; padding: 8px; box-sizing: border-box; font-size: 14px; }
-    button { margin-top: 8px; padding: 8px 20px; cursor: pointer; }
-    #query-results, #ingest-result { margin-top: 16px; }
-    .result-card {
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      padding: 12px;
-      margin-bottom: 12px;
-    }
-    .result-meta { font-size: 12px; color: #888; margin-bottom: 6px; }
-    .result-content { font-size: 14px; white-space: pre-wrap; }
-    .error { color: red; }
-  </style>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <h1>RAG MCP Demo</h1>
+  <div class="container">
+    <header>
+      <h1>RAG MCP</h1>
+      <p>Retrieval-Augmented Generation with Model Context Protocol</p>
+    </header>
 
-  <h2>Ingest URL</h2>
-  <input id="ingest-url" type="text" placeholder="https://en.wikipedia.org/wiki/..." />
-  <button onclick="ingest()">Ingest URL</button>
-  <div id="ingest-result"></div>
+    <div class="section">
+      <h2>Ingest</h2>
+      <div class="input-row">
+        <input id="ingest-url" type="text" placeholder="Paste a URL to ingest..." />
+        <button onclick="ingest()">Ingest URL</button>
+      </div>
+      <div id="ingest-result" class="status-msg"></div>
+      <div class="input-row" style="margin-top: 12px;">
+        <input id="pdf-file" type="file" accept=".pdf" />
+        <button onclick="uploadPdf()">Upload PDF</button>
+      </div>
+      <div id="upload-result" class="status-msg"></div>
+    </div>
 
-  <h2>Upload PDF</h2>
-  <input id="pdf-file" type="file" accept=".pdf" />
-  <button onclick="uploadPdf()">Upload</button>
-  <div id="upload-result"></div>
+    <div class="section">
+      <h2>Query</h2>
+      <div class="query-controls">
+        <input id="query-input" type="text" placeholder="Ask anything..." />
+        <input id="n-results" type="number" value="3" min="1" max="20" />
+        <span class="n-label">results</span>
+      </div>
+      <div class="btn-group">
+        <button class="btn-secondary" onclick="query()">Raw Chunks</button>
+        <button onclick="answer()">AI Answer (DB)</button>
+        <button class="btn-web" onclick="webSearch()">AI Answer (Web)</button>
+        <button class="btn-agent" onclick="agent()">Agent</button>
+      </div>
+      <div class="btn-hints">
+        <span class="btn-hint">Raw Chunks: original text from DB</span>
+        <span class="btn-hint">AI Answer (DB): AI summarizes DB results</span>
+        <span class="btn-hint">AI Answer (Web): AI summarizes live web results</span>
+        <span class="btn-hint">Agent: AI autonomously picks tools to answer</span>
+      </div>
+      <div id="query-results"></div>
+    </div>
+  </div>
 
-  <h2>Query</h2>
-  <input id="query-input" type="text" placeholder="what is the purpose of RAG?" />
-  <input id="n-results" type="number" value="3" min="1" max="20" style="width: 80px; margin-top: 6px;" />
-  <label for="n-results" style="font-size: 14px;"> results</label>
-  <button onclick="query()">Raw Chunks</button>
-  <button onclick="answer()">AI Answer (DB)</button>
-  <button onclick="webSearch()">AI Answer (Web)</button>
-  <p style="font-size: 12px; color: #999; margin-top: 4px;">
-    Raw Chunks: return original text from DB &nbsp;|&nbsp;
-    AI Answer (DB): AI summarizes DB results &nbsp;|&nbsp;
-    AI Answer (Web): AI summarizes live web results
-  </p>
-  <div id="query-results"></div>
-
-  <script>
-    const API = "http://localhost:8000";
-
-    async function uploadPdf() {
-      const fileInput = document.getElementById("pdf-file");
-      const el = document.getElementById("upload-result");
-      if (!fileInput.files.length) { el.textContent = "Please select a PDF."; return; }
-      el.textContent = "Uploading...";
-      try {
-        const formData = new FormData();
-        formData.append("file", fileInput.files[0]);
-        const res = await fetch(`${API}/upload`, { method: "POST", body: formData });
-        const data = await res.json();
-        el.textContent = `Done: ${data.chunks_stored} chunks stored from ${data.file}`;
-      } catch (e) {
-        el.innerHTML = `<span class="error">Error: ${e.message}</span>`;
-      }
-    }
-
-    async function ingest() {
-      const url = document.getElementById("ingest-url").value.trim();
-      const el = document.getElementById("ingest-result");
-      el.textContent = "Ingesting...";
-      try {
-        const res = await fetch(`${API}/ingest`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url }),
-        });
-        const data = await res.json();
-        el.textContent = `Done: ${data.chunks_stored} chunks stored from ${data.url}`;
-      } catch (e) {
-        el.innerHTML = `<span class="error">Error: ${e.message}</span>`;
-      }
-    }
-
-    async function query() {
-      const q = document.getElementById("query-input").value.trim();
-      const nInput = document.getElementById("n-results");
-      const raw = parseInt(nInput.value);
-      const el = document.getElementById("query-results");
-      if (isNaN(raw) || raw < 1 || raw > 20) {
-        nInput.value = Math.min(Math.max(raw || 3, 1), 20);
-        el.innerHTML = `<span class="error">Please enter a number between 1 and 20.</span>`;
-        return;
-      }
-      const n = raw;
-      el.textContent = "Searching...";
-      try {
-        const res = await fetch(`${API}/query`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: q, n_results: n }),
-        });
-        const results = await res.json();
-        el.innerHTML = results.map((r, i) => `
-          <div class="result-card">
-            <div class="result-meta">(${i+1}) score: ${r.score} &nbsp;|&nbsp; chunk: ${r.chunk_index} &nbsp;|&nbsp; <a href="${r.url}" target="_blank">${r.url}</a></div>
-            <div class="result-content">${r.content}</div>
-          </div>
-        `).join("");
-      } catch (e) {
-        el.innerHTML = `<span class="error">Error: ${e.message}</span>`;
-      }
-    }
-
-    async function answer() {
-      const q = document.getElementById("query-input").value.trim();
-      const n = Math.min(Math.max(parseInt(document.getElementById("n-results").value) || 3, 1), 20);
-      const el = document.getElementById("query-results");
-      el.textContent = "Asking GPT...";
-      try {
-        const res = await fetch(`${API}/answer`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: q, n_results: n }),
-        });
-        const data = await res.json();
-        el.innerHTML = `
-          <div class="result-card" style="background:#f9f9f9;">
-            <strong>GPT Answer</strong>
-            <div>${marked.parse(data.answer)}</div>
-          </div>
-          <details>
-            <summary style="cursor:pointer; font-size:13px; color:#888;">Sources (${data.sources.length})</summary>
-            ${data.sources.map((r, i) => `
-              <div class="result-card">
-                <div class="result-meta">(${i+1}) score: ${r.score} &nbsp;|&nbsp; <a href="${r.url}" target="_blank">${r.url}</a></div>
-                <div class="result-content">${r.content}</div>
-              </div>
-            `).join("")}
-          </details>`;
-      } catch (e) {
-        el.innerHTML = `<span class="error">Error: ${e.message}</span>`;
-      }
-    }
-
-    async function webSearch() {
-      const q = document.getElementById("query-input").value.trim();
-      const n = Math.min(Math.max(parseInt(document.getElementById("n-results").value) || 3, 1), 20);
-      const el = document.getElementById("query-results");
-      el.textContent = "Searching the web...";
-      try {
-        const res = await fetch(`${API}/search`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: q, n_results: n }),
-        });
-        const data = await res.json();
-        el.innerHTML = `
-          <div class="result-card" style="background:#f0f7ff;">
-            <strong>Web Answer</strong>
-            <div>${marked.parse(data.answer)}</div>
-          </div>
-          <details>
-            <summary style="cursor:pointer; font-size:13px; color:#888;">Sources (${data.sources.length})</summary>
-            ${data.sources.map((r, i) => `
-              <div class="result-card">
-                <div class="result-meta">(${i+1}) score: ${r.score} &nbsp;|&nbsp; <a href="${r.url}" target="_blank">${r.url}</a></div>
-                <div class="result-content">${r.content}</div>
-              </div>
-            `).join("")}
-          </details>`;
-      } catch (e) {
-        el.innerHTML = `<span class="error">Error: ${e.message}</span>`;
-      }
-    }
-  </script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
