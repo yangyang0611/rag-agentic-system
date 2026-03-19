@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import chromadb
 from sentence_transformers import SentenceTransformer
 import hashlib
+import fitz  # pymupdf
 
 # 載入 embedding model（第一次會下載，之後 cache）
 model = SentenceTransformer("BAAI/bge-small-en-v1.5")
@@ -47,6 +48,31 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
         i += chunk_size - overlap  # overlap 讓相鄰 chunk 有重疊，避免切斷語意
 
     return chunks
+
+
+def read_pdf(path: str) -> str:
+    """讀取 PDF，回傳純文字內容"""
+    doc = fitz.open(path)
+    text = "\n".join(page.get_text() for page in doc)
+    doc.close()
+    lines = [line.strip() for line in text.splitlines() if len(line.strip()) >= 20]
+    return "\n".join(lines)
+
+
+def ingest_file(path: str, source: str = "") -> dict:
+    """讀取本地 PDF → 切chunks → 向量化 → 存DB"""
+    source = source or path
+    text = read_pdf(path)
+    chunks = chunk_text(text)
+    embeddings = model.encode(chunks).tolist()
+    ids = [hashlib.md5(f"{source}_{i}".encode()).hexdigest() for i in range(len(chunks))]
+    collection.upsert(
+        ids=ids,
+        embeddings=embeddings,
+        documents=chunks,
+        metadatas=[{"url": source, "chunk_index": i} for i in range(len(chunks))],
+    )
+    return {"file": source, "chunks_stored": len(chunks)}
 
 
 def ingest_url(url: str) -> dict:
