@@ -1,14 +1,14 @@
 import os
 from dotenv import load_dotenv
 load_dotenv()
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from tavily import TavilyClient
 from mcp.server.fastmcp import FastMCP
-from ingester import ingest_url as _ingest_url, collection, model
+from ingester import ingest_url as _ingest_url, ingest_file as _ingest_file, collection, model
 
 openai_client = OpenAI(
     api_key="ollama",
@@ -91,6 +91,17 @@ def api_query(req: QueryRequest):
 @app.post("/ingest")
 def api_ingest(req: IngestRequest):
     return ingest_url(req.url)
+
+
+@app.post("/upload")
+def api_upload(file: UploadFile):
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(file.file.read())
+        tmp_path = tmp.name
+    result = _ingest_file(tmp_path, source=file.filename)
+    os.unlink(tmp_path)
+    return result
 
 
 @app.post("/answer")
