@@ -6,7 +6,7 @@ import hashlib
 import fitz  # pymupdf
 
 # 載入 embedding model（第一次會下載，之後 cache）
-model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+model = SentenceTransformer("BAAI/bge-large-en-v1.5")
 
 # 初始化 ChromaDB（存在本地 ./chroma_db 資料夾）
 client = chromadb.PersistentClient(path="./chroma_db")
@@ -53,7 +53,7 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
 def read_pdf(path: str) -> str:
     """讀取 PDF，回傳純文字內容"""
     doc = fitz.open(path)
-    text = "\n".join(page.get_text() for page in doc)
+    text = "\n".join(str(page.get_text()) for page in doc)
     doc.close()
     lines = [line.strip() for line in text.splitlines() if len(line.strip()) >= 20]
     return "\n".join(lines)
