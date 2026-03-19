@@ -6,13 +6,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from openai import OpenAI
+from tavily import TavilyClient
 from mcp.server.fastmcp import FastMCP
 from ingester import ingest_url as _ingest_url, collection, model
 
 openai_client = OpenAI(
-    api_key=os.environ["GROQ_API_KEY"],
-    base_url="https://api.groq.com/openai/v1",
+    api_key="ollama",
+    base_url="http://localhost:11434/v1",
 )
+tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 mcp = FastMCP("rag-mcp")
 
@@ -96,7 +98,7 @@ def api_answer(req: QueryRequest):
     chunks = query_docs(req.query, req.n_results)
     context = "\n\n".join(f"[{i+1}] {c['content']}" for i, c in enumerate(chunks))
     response = openai_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama3.1:8b",
         messages=[
             {"role": "system", "content": "Answer the user's question based only on the provided context. Be concise."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
@@ -105,6 +107,23 @@ def api_answer(req: QueryRequest):
     return {
         "answer": response.choices[0].message.content,
         "sources": chunks,
+    }
+
+
+@app.post("/search")
+def api_search(req: QueryRequest):
+    results = tavily_client.search(req.query, max_results=req.n_results)
+    context = "\n\n".join(f"[{i+1}] {r['content']}" for i, r in enumerate(results["results"]))
+    response = openai_client.chat.completions.create(
+        model="llama3.1:8b",
+        messages=[
+            {"role": "system", "content": "Answer the user's question based only on the provided context. Be concise."},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
+        ],
+    )
+    return {
+        "answer": response.choices[0].message.content,
+        "sources": [{"url": r["url"], "content": r["content"], "score": round(r.get("score", 0), 4)} for r in results["results"]],
     }
 
 
