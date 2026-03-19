@@ -1,7 +1,7 @@
-import httpx
-from bs4 import BeautifulSoup
+import os
 import chromadb
 from sentence_transformers import SentenceTransformer
+from tavily import TavilyClient
 import hashlib
 import fitz  # pymupdf
 
@@ -16,24 +16,15 @@ collection = client.get_or_create_collection(
 )
 
 
+tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+
 def fetch_webpage(url: str) -> str:
-    """爬網頁，回傳純文字內容"""
-    headers = {"User-Agent": "rag-mcp/0.1 (educational project; httpx)"}
-    response = httpx.get(url, timeout=15, follow_redirects=True, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # 移除雜訊標籤
-    for tag in soup(["script", "style", "nav", "footer", "header", "table", "sup", "[edit]"]):
-        tag.decompose()
-
-    # 優先抓主要內容區塊（Wikipedia 用 #mw-content-text，一般網頁用 article/main）
-    main = soup.find(id="mw-content-text") or soup.find("article") or soup.find("main") or soup
-
-    text = main.get_text(separator="\n")
-
-    # 過濾掉太短的行（導航按鈕、標籤等雜訊通常很短）
-    lines = [line.strip() for line in text.splitlines() if len(line.strip()) >= 20]
-    return "\n".join(lines)
+    """用 Tavily extract 爬網頁，回傳純文字內容"""
+    response = tavily_client.extract(urls=[url], format="text")
+    if not response["results"]:
+        raise ValueError(f"Failed to extract content from {url}")
+    return response["results"][0]["raw_content"]
 
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:

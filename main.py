@@ -7,15 +7,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import OpenAI
-from tavily import TavilyClient
 from mcp.server.fastmcp import FastMCP
-from ingester import ingest_url as _ingest_url, ingest_file as _ingest_file, collection, model
+from ingester import ingest_url as _ingest_url, ingest_file as _ingest_file, collection, model, tavily_client
 
 openai_client = OpenAI(
     api_key=os.environ["GROQ_API_KEY"],
     base_url="https://api.groq.com/openai/v1",
 )
-tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 mcp = FastMCP("rag-mcp")
 
