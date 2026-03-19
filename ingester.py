@@ -21,14 +21,17 @@ def fetch_webpage(url: str) -> str:
     response = httpx.get(url, timeout=15, follow_redirects=True, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # 移除 script、style 等雜訊
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
+    # 移除雜訊標籤
+    for tag in soup(["script", "style", "nav", "footer", "header", "table", "sup", "[edit]"]):
         tag.decompose()
 
-    text = soup.get_text(separator="\n")
+    # 優先抓主要內容區塊（Wikipedia 用 #mw-content-text，一般網頁用 article/main）
+    main = soup.find(id="mw-content-text") or soup.find("article") or soup.find("main") or soup
 
-    # 清理多餘空行
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    text = main.get_text(separator="\n")
+
+    # 過濾掉太短的行（導航按鈕、標籤等雜訊通常很短）
+    lines = [line.strip() for line in text.splitlines() if len(line.strip()) >= 20]
     return "\n".join(lines)
 
 
