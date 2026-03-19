@@ -7,12 +7,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import OpenAI
+from typing import cast
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam, ChatCompletionMessageToolCall
 from mcp.server.fastmcp import FastMCP
 from ingester import ingest_url as _ingest_url, ingest_file as _ingest_file, collection, model, tavily_client
 
 openai_client = OpenAI(
-    api_key=os.environ["GROQ_API_KEY"],
-    base_url="https://api.groq.com/openai/v1",
+    api_key=os.environ["GEMINI_API_KEY"],
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 
 mcp = FastMCP("rag-mcp")
@@ -78,6 +80,28 @@ def query_docs(query: str, n_results: int = 2) -> list[dict]:
     ]
 
 
+@mcp.tool()
+def web_search(query: str, n_results: int = 3) -> list[dict]:
+    """搜尋網路上的即時資訊，回傳相關結果。當向量資料庫沒有相關資料時使用。
+
+    Args:
+        query: 搜尋問題或關鍵字
+        n_results: 回傳結果數量（預設 3）
+
+    Returns:
+        搜尋結果列表，每個包含內容、來源網址與相關度分數
+    """
+    results = tavily_client.search(query, max_results=n_results)
+    return [
+        {
+            "content": r["content"],
+            "url": r["url"],
+            "score": round(r.get("score", 0), 4),
+        }
+        for r in results["results"]
+    ]
+
+
 @app.get("/")
 def index():
     return FileResponse("index.html")
@@ -109,7 +133,7 @@ def api_answer(req: QueryRequest):
     chunks = query_docs(req.query, req.n_results)
     context = "\n\n".join(f"[{i+1}] {c['content']}" for i, c in enumerate(chunks))
     response = openai_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="gemini-2.5-flash",
         messages=[
             {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
@@ -126,7 +150,7 @@ def api_search(req: QueryRequest):
     results = tavily_client.search(req.query, max_results=req.n_results)
     context = "\n\n".join(f"[{i+1}] {r['content']}" for i, r in enumerate(results["results"]))
     response = openai_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="gemini-2.5-flash",
         messages=[
             {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
@@ -138,38 +162,134 @@ def api_search(req: QueryRequest):
     }
 
 
+AGENT_TOOLS: list[ChatCompletionToolParam] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_docs",
+            "description": "Search the local vector database for relevant document chunks. Use this when the question is likely about content the user has previously ingested.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "n_results": {"type": "integer", "description": "Number of results", "default": 3},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the internet for up-to-date information. Use this when the question is about recent events, general knowledge, or when the local database is unlikely to have the answer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "n_results": {"type": "integer", "description": "Number of results", "default": 3},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+TOOL_DISPATCH = {
+    "query_docs": lambda args: query_docs(args["query"], args.get("n_results", 3)),
+    "web_search": lambda args: web_search(args["query"], args.get("n_results", 3)),
+}
+
+
 @app.post("/agent")
 def api_agent(req: QueryRequest):
+    import json as _json
+
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": "You are a helpful assistant with access to tools. ALWAYS search the local database (query_docs) first. Only use web_search if the database returns no relevant results. You may call multiple tools if needed. Be direct and concise in your final answer."},
+        {"role": "user", "content": req.query},
+    ]
     all_sources: list[dict] = []
+    tools_used: list[str] = []
 
-    # Step 1: Search DB
-    db_results = query_docs(req.query, req.n_results)
-    db_good = db_results and any(r["score"] >= 0.7 for r in db_results)
+    print(f"\n{'='*60}")
+    print(f"[Agent] New query: {req.query}")
+    print(f"{'='*60}")
 
-    if db_good:
-        context = "\n\n".join(f"[{i+1}] {c['content']}" for i, c in enumerate(db_results))
-        all_sources = db_results
-        source_label = "DB"
+    # Agent loop: let LLM decide which tools to call (max 5 rounds)
+    for round_num in range(5):
+        print(f"[Agent] Round {round_num + 1}: Asking LLM...")
+        try:
+            response = openai_client.chat.completions.create(
+                model="gemini-2.5-flash",
+                messages=messages,
+                tools=AGENT_TOOLS,
+            )
+        except Exception as e:
+            # Groq tool_use_failed: retry without tools
+            print(f"[Agent] Round {round_num + 1}: Tool call failed ({e}), retrying without tools")
+            response = openai_client.chat.completions.create(
+                model="gemini-2.5-flash",
+                messages=messages,
+            )
+            msg = response.choices[0].message
+            break
+        msg = response.choices[0].message
+
+        # No tool calls → LLM is ready to answer
+        if not msg.tool_calls:
+            print(f"[Agent] Round {round_num + 1}: No tool calls, generating answer")
+            break
+
+        # Execute each tool the LLM chose
+        messages.append(cast(ChatCompletionMessageParam, msg.to_dict()))
+        for tc in msg.tool_calls:
+            if not isinstance(tc, ChatCompletionMessageToolCall):
+                continue
+            args = _json.loads(tc.function.arguments)
+            print(f"[Agent] Round {round_num + 1}: {tc.function.name}({args})")
+            results = TOOL_DISPATCH[tc.function.name](args)
+            print(f"[Agent] Round {round_num + 1}: → {len(results)} results")
+            tools_used.append(tc.function.name)
+            all_sources.extend(results)
+            messages.append(cast(ChatCompletionMessageParam, {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": _json.dumps(results, ensure_ascii=False),
+            }))
     else:
-        # Step 2: Fallback to web search
-        web_results = tavily_client.search(req.query, max_results=req.n_results)
-        web_items = web_results["results"]
-        context = "\n\n".join(f"[{i+1}] {r['content']}" for i, r in enumerate(web_items))
-        all_sources = [{"url": r["url"], "content": r["content"], "score": round(r.get("score", 0), 4)} for r in web_items]
-        source_label = "Web"
+        print(f"[Agent] Max rounds reached, forcing final answer")
+        messages.append(cast(ChatCompletionMessageParam, {"role": "user", "content": "Please provide your final answer now based on all the information gathered."}))
+        response = openai_client.chat.completions.create(
+            model="gemini-2.5-flash",
+            messages=messages,
+        )
+        msg = response.choices[0].message
 
-    # Step 3: Generate answer
-    response = openai_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
-        ],
-    )
+    print(f"[Agent] Done\n{'='*60}\n")
+
+    # Deduplicate sources by content
+    seen = set()
+    unique_sources = []
+    for s in all_sources:
+        key = s.get("content", "")
+        if key not in seen:
+            seen.add(key)
+            unique_sources.append(s)
+
+    # Build source label from tools used
+    if "query_docs" in tools_used and "web_search" in tools_used:
+        source_label = "DB + Web"
+    elif "query_docs" in tools_used:
+        source_label = "DB"
+    elif "web_search" in tools_used:
+        source_label = "Web"
+    else:
+        source_label = "LLM"
 
     return {
-        "answer": f"*[Source: {source_label}]*\n\n{response.choices[0].message.content}",
-        "sources": all_sources,
+        "answer": f"*[Source: {source_label}]*\n\n{msg.content}",
+        "sources": unique_sources,
     }
 
 
