@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rag-mcp": {
+      "command": "/home/yiting/rag-mcp/.venv/bin/python",
+      "args": ["/home/yiting/rag-mcp/main.py"]
+    }
+  }
+}
