@@ -11,3 +11,7 @@ wheels/
 
 # Environment variables (contains secrets)
 .env
+
+# Local data
+chroma_db/
+data/
