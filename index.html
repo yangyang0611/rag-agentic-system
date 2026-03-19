@@ -32,8 +32,9 @@
   <input id="query-input" type="text" placeholder="what is the purpose of RAG?" />
   <input id="n-results" type="number" value="3" min="1" max="20" style="width: 80px; margin-top: 6px;" />
   <label for="n-results" style="font-size: 14px;"> results</label>
-  <button onclick="query()">Search</button>
+  <button onclick="query()">DBSearch</button>
   <button onclick="answer()">Ask GPT</button>
+  <button onclick="webSearch()">Web Search</button>
   <div id="query-results"></div>
 
   <script>
@@ -101,6 +102,37 @@
         el.innerHTML = `
           <div class="result-card" style="background:#f9f9f9;">
             <strong>GPT Answer</strong>
+            <p>${data.answer}</p>
+          </div>
+          <details>
+            <summary style="cursor:pointer; font-size:13px; color:#888;">Sources (${data.sources.length})</summary>
+            ${data.sources.map((r, i) => `
+              <div class="result-card">
+                <div class="result-meta">(${i+1}) score: ${r.score} &nbsp;|&nbsp; <a href="${r.url}" target="_blank">${r.url}</a></div>
+                <div class="result-content">${r.content}</div>
+              </div>
+            `).join("")}
+          </details>`;
+      } catch (e) {
+        el.innerHTML = `<span class="error">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function webSearch() {
+      const q = document.getElementById("query-input").value.trim();
+      const n = Math.min(Math.max(parseInt(document.getElementById("n-results").value) || 3, 1), 20);
+      const el = document.getElementById("query-results");
+      el.textContent = "Searching the web...";
+      try {
+        const res = await fetch(`${API}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q, n_results: n }),
+        });
+        const data = await res.json();
+        el.innerHTML = `
+          <div class="result-card" style="background:#f0f7ff;">
+            <strong>Web Answer</strong>
             <p>${data.answer}</p>
           </div>
           <details>
