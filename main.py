@@ -4,6 +4,7 @@ load_dotenv()
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import OpenAI
 from tavily import TavilyClient
@@ -11,8 +12,8 @@ from mcp.server.fastmcp import FastMCP
 from ingester import ingest_url as _ingest_url, ingest_file as _ingest_file, collection, model
 
 openai_client = OpenAI(
-    api_key="ollama",
-    base_url="http://localhost:11434/v1",
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
 )
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
@@ -20,6 +21,7 @@ mcp = FastMCP("rag-mcp")
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 class QueryRequest(BaseModel):
@@ -99,7 +101,7 @@ def api_upload(file: UploadFile):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(file.file.read())
         tmp_path = tmp.name
-    result = _ingest_file(tmp_path, source=file.filename)
+    result = _ingest_file(tmp_path, source=file.filename or "unknown.pdf")
     os.unlink(tmp_path)
     return result
 
@@ -109,9 +111,9 @@ def api_answer(req: QueryRequest):
     chunks = query_docs(req.query, req.n_results)
     context = "\n\n".join(f"[{i+1}] {c['content']}" for i, c in enumerate(chunks))
     response = openai_client.chat.completions.create(
-        model="llama3.1:8b",
+        model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "Answer the user's question based only on the provided context. Be concise."},
+            {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
         ],
     )
@@ -126,15 +128,50 @@ def api_search(req: QueryRequest):
     results = tavily_client.search(req.query, max_results=req.n_results)
     context = "\n\n".join(f"[{i+1}] {r['content']}" for i, r in enumerate(results["results"]))
     response = openai_client.chat.completions.create(
-        model="llama3.1:8b",
+        model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "Answer the user's question based only on the provided context. Be concise."},
+            {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
         ],
     )
     return {
         "answer": response.choices[0].message.content,
         "sources": [{"url": r["url"], "content": r["content"], "score": round(r.get("score", 0), 4)} for r in results["results"]],
+    }
+
+
+@app.post("/agent")
+def api_agent(req: QueryRequest):
+    all_sources: list[dict] = []
+
+    # Step 1: Search DB
+    db_results = query_docs(req.query, req.n_results)
+    db_good = db_results and any(r["score"] >= 0.7 for r in db_results)
+
+    if db_good:
+        context = "\n\n".join(f"[{i+1}] {c['content']}" for i, c in enumerate(db_results))
+        all_sources = db_results
+        source_label = "DB"
+    else:
+        # Step 2: Fallback to web search
+        web_results = tavily_client.search(req.query, max_results=req.n_results)
+        web_items = web_results["results"]
+        context = "\n\n".join(f"[{i+1}] {r['content']}" for i, r in enumerate(web_items))
+        all_sources = [{"url": r["url"], "content": r["content"], "score": round(r.get("score", 0), 4)} for r in web_items]
+        source_label = "Web"
+
+    # Step 3: Generate answer
+    response = openai_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
+        ],
+    )
+
+    return {
+        "answer": f"*[Source: {source_label}]*\n\n{response.choices[0].message.content}",
+        "sources": all_sources,
     }
 
 
