@@ -99,22 +99,42 @@ def register_routes(app, openai_client):
 
     @app.post("/agent")
     def api_agent(req: QueryRequest):
-        # 從 memory 取出這個 session 的歷史對話（如果有的話）
+        # ── Step 0: Query Rewrite ──
+        # 用 LLM 把用戶的口語化問題改寫成更精準的搜尋 query
+        # 例如「台積電最近怎樣」→「TSMC 2024 recent stock performance revenue」
         history = memory.get(req.session_id, [])
+        rewrite_response = openai_client.chat.completions.create(
+            model="gemini-2.5-flash",
+            messages=[
+                {"role": "system", "content": (
+                    "You are a query rewriter. Rewrite the user's question into a better search query "
+                    "optimized for both vector database semantic search and web search. "
+                    "Keep the original language if it's not English. "
+                    "If there is conversation history, resolve pronouns and references (e.g. 'it', 'that', 'this') using context. "
+                    "Output ONLY the rewritten query, nothing else."
+                )},
+                *history,
+                {"role": "user", "content": req.query},
+            ],
+        )
+        rewritten_query = rewrite_response.choices[0].message.content.strip()
+        print(f"\n{'='*60}")
+        print(f"[Agent] Original query: {req.query}")
+        print(f"[Agent] Rewritten query: {rewritten_query}")
+        print(f"{'='*60}")
+
+        # ── Step 1: Agentic tool-calling loop ──
         messages: list[ChatCompletionMessageParam] = [
             # ↓ 這就是「策略指令」：用自然語言告訴 LLM 行為優先順序
             #   改這句話就能改變 Agent 的決策邏輯，不用動任何程式碼
             {"role": "system", "content": "You are a helpful assistant with access to tools. ALWAYS search the local database (query_docs) first. Only use web_search if the database returns no relevant results. You may call multiple tools if needed. Be direct and concise in your final answer."},
             # ↓ 把歷史對話塞進來，讓 LLM 知道之前聊過什麼
             *history,
-            {"role": "user", "content": req.query},
+            # ↓ 用改寫後的 query 讓搜尋更精準，但也附上原文讓 LLM 知道用戶真正在問什麼
+            {"role": "user", "content": f"Original question: {req.query}\n\nOptimized search query: {rewritten_query}"},
         ]
         all_sources: list[dict] = []
         tools_used: list[str] = []
-
-        print(f"\n{'='*60}")
-        print(f"[Agent] New query: {req.query}")
-        print(f"{'='*60}")
 
         # ── Agentic Loop ──
         # 每一輪：問 LLM → 它決定要不要用工具 → 執行工具 → 結果餵回去
