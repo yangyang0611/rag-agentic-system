@@ -10,8 +10,8 @@ from tools import mcp
 from routes import register_routes
 
 openai_client = OpenAI(
-    api_key=os.environ["GEMINI_API_KEY"],
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    api_key=os.environ["OPENROUTER_API_KEY"],
+    base_url="https://openrouter.ai/api/v1",
 )
 
 app = FastAPI()
