@@ -1,0 +1,2 @@
+When using MCP tools, ALWAYS search the local database (query_docs) first.
+Only use web_search if query_docs returns no relevant results.
