@@ -26,6 +26,18 @@ class IngestRequest(BaseModel):
 memory: dict[str, list] = {}
 
 def register_routes(app, openai_client):
+    MODEL = "gemini-2.5-flash"
+
+    def chat(messages, **kwargs):
+        """共用的 LLM 呼叫，省掉重複的 model + client 設定
+        **kwargs 會把額外的具名參數（如 tools=AGENT_TOOLS）原封不動傳給 create()
+        這樣不用為每個參數都寫一個形參，未來要傳 temperature 等也不用改這裡
+        """
+        # **kwargs 展開 dict：chat(messages, tools=X) → create(model=..., messages=..., tools=X)
+        return openai_client.chat.completions.create(
+            model=MODEL, messages=messages, **kwargs
+        )
+
     @app.get("/")
     def index():
         return FileResponse("index.html")
@@ -52,13 +64,10 @@ def register_routes(app, openai_client):
     def api_answer(req: QueryRequest):
         chunks = query_docs(req.query, req.n_results)
         context = "\n\n".join(f"[{i+1}] {c['content']}" for i, c in enumerate(chunks))
-        response = openai_client.chat.completions.create(
-            model="gemini-2.5-flash",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
-            ],
-        )
+        response = chat([
+            {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
+        ])
         return {
             "answer": response.choices[0].message.content,
             "sources": chunks,
@@ -68,13 +77,10 @@ def register_routes(app, openai_client):
     def api_search(req: QueryRequest):
         results = tavily_client.search(req.query, max_results=req.n_results)
         context = "\n\n".join(f"[{i+1}] {r['content']}" for i, r in enumerate(results["results"]))
-        response = openai_client.chat.completions.create(
-            model="gemini-2.5-flash",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
-            ],
-        )
+        response = chat([
+            {"role": "system", "content": "You are a helpful assistant. Use the provided context and your own knowledge to answer. Be direct and concise."},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {req.query}"},
+        ])
         return {
             "answer": response.choices[0].message.content,
             "sources": [{"url": r["url"], "content": r["content"], "score": round(r.get("score", 0), 4)} for r in results["results"]],
@@ -103,20 +109,21 @@ def register_routes(app, openai_client):
         # 用 LLM 把用戶的口語化問題改寫成更精準的搜尋 query
         # 例如「台積電最近怎樣」→「TSMC 2024 recent stock performance revenue」
         history = memory.get(req.session_id, [])
-        rewrite_response = openai_client.chat.completions.create(
-            model="gemini-2.5-flash",
-            messages=[
-                {"role": "system", "content": (
-                    "You are a query rewriter. Rewrite the user's question into a better search query "
-                    "optimized for both vector database semantic search and web search. "
-                    "Keep the original language if it's not English. "
-                    "If there is conversation history, resolve pronouns and references (e.g. 'it', 'that', 'this') using context. "
-                    "Output ONLY the rewritten query, nothing else."
-                )},
-                *history,
-                {"role": "user", "content": req.query},
-            ],
-        )
+        rewrite_response = chat([
+            {"role": "system", "content": (
+                "You are a query rewriter. Rewrite the user's question into a better search query "
+                "optimized for both vector database semantic search and web search. "
+                "Keep the original language if it's not English. "
+                "If there is conversation history, resolve pronouns and references (e.g. 'it', 'that', 'this') using context. "
+                "Output ONLY the rewritten query, nothing else."
+            )},
+            # *history 把對話記錄 list 展開塞進外層 list
+            # 例如 history = [{user: "A"}, {assistant: "B"}]
+            # → [system_msg, {user: "A"}, {assistant: "B"}, {user: 新問題}]
+            # 沒有 * 的話會變成 list 裡包 list，格式就壞了
+            *history,
+            {"role": "user", "content": req.query},
+        ])
         rewritten_query = rewrite_response.choices[0].message.content.strip()
         print(f"\n{'='*60}")
         print(f"[Agent] Original query: {req.query}")
@@ -143,18 +150,11 @@ def register_routes(app, openai_client):
             print(f"[Agent] Round {round_num + 1}: Asking LLM...")
             try:
                 # 把可用工具列表 (AGENT_TOOLS) 傳給 LLM，讓它自己選
-                response = openai_client.chat.completions.create(
-                    model="gemini-2.5-flash",
-                    messages=messages,
-                    tools=AGENT_TOOLS,
-                )
+                response = chat(messages, tools=AGENT_TOOLS)
             except Exception as e:
                 # fallback：工具呼叫失敗就讓 LLM 直接回答
                 print(f"[Agent] Round {round_num + 1}: Tool call failed ({e}), retrying without tools")
-                response = openai_client.chat.completions.create(
-                    model="gemini-2.5-flash",
-                    messages=messages,
-                )
+                response = chat(messages)
                 msg = response.choices[0].message
                 break
             msg = response.choices[0].message
@@ -188,10 +188,7 @@ def register_routes(app, openai_client):
             # for-else：迴圈跑完 5 輪都沒 break → 強制要求 LLM 給最終答案
             print(f"[Agent] Max rounds reached, forcing final answer")
             messages.append(cast(ChatCompletionMessageParam, {"role": "user", "content": "Please provide your final answer now based on all the information gathered."}))
-            response = openai_client.chat.completions.create(
-                model="gemini-2.5-flash",
-                messages=messages,
-            )
+            response = chat(messages)
             msg = response.choices[0].message
 
         print(f"[Agent] Done\n{'='*60}\n")
