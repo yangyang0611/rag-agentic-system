@@ -1,4 +1,11 @@
 const API = "http://localhost:8000";
+const SESSION_ID = crypto.randomUUID();
+
+async function clearMemory() {
+  await fetch(`${API}/memory/${SESSION_ID}`, { method: "DELETE" });
+  document.getElementById("memory-status").textContent = "Memory cleared.";
+  setTimeout(() => document.getElementById("memory-status").textContent = "", 2000);
+}
 
 async function saveSourcesToDB(btn) {
   const container = btn.parentElement;
@@ -105,7 +112,7 @@ async function answer() {
   const p = getQueryParams(); if (!p) return;
   p.el.innerHTML = `<div class="status-msg loading">Generating answer from DB...</div>`;
   try {
-    const res = await fetch(`${API}/answer`, {
+    const res = await fetch(`${API}/ask-db`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: p.q, n_results: p.n }),
@@ -159,7 +166,7 @@ async function agent() {
     const res = await fetch(`${API}/agent`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: p.q, n_results: p.n }),
+      body: JSON.stringify({ query: p.q, n_results: p.n, session_id: SESSION_ID }),
     });
     const data = await res.json();
     const webUrls = data.sources.filter(s => s.url && s.url.startsWith("http"));
