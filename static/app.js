@@ -132,12 +132,21 @@ async function webSearch() {
       body: JSON.stringify({ query: p.q, n_results: p.n }),
     });
     const data = await res.json();
+    const webUrls = data.sources.filter(s => s.url && s.url.startsWith("http"));
+    const saveBtn = webUrls.length ? `
+      <div class="save-prompt" style="margin-top: 12px;">
+        <span style="font-size: 13px; color: #ccc;">Save these web sources to DB?</span>
+        <button class="btn-agent" style="padding: 6px 14px; font-size: 12px; margin-left: 8px;" onclick="saveSourcesToDB(this)">Yes</button>
+        <button class="btn-secondary" style="padding: 6px 14px; font-size: 12px; margin-left: 4px;" onclick="this.parentElement.innerHTML='<span style=\\'font-size:13px;color:#888;\\'>Skipped.</span>'">No</button>
+      </div>` : "";
+    window._pendingSources = webUrls;
     p.el.innerHTML = `
       <div class="answer-card web">
         <strong>AI Answer (Web)</strong>
         <div>${marked.parse(data.answer)}</div>
       </div>
-      ${renderSources(data.sources)}`;
+      ${renderSources(data.sources)}
+      ${saveBtn}`;
   } catch (e) {
     p.el.innerHTML = `<div class="status-msg error">Error: ${e.message}</div>`;
   }
