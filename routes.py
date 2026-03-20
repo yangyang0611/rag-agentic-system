@@ -25,8 +25,13 @@ class IngestRequest(BaseModel):
 # 這樣同一個 session 的多次請求可以記住之前聊過什麼
 memory: dict[str, list] = {}
 
+# ── Agent State ──
+# Human-in-the-loop：Agent 每執行完一輪工具就暫停，等用戶決定要不要繼續
+# 這個 dict 存放每個 session 暫停時的完整狀態，讓 /agent/continue 可以接著跑
+agent_state: dict[str, dict] = {}
+
 def register_routes(app, openai_client):
-    MODEL = "gemini-2.5-flash"
+    MODEL = "google/gemini-2.5-flash"
 
     def chat(messages, **kwargs):
         """共用的 LLM 呼叫，省掉重複的 model + client 設定
@@ -35,7 +40,7 @@ def register_routes(app, openai_client):
         """
         # **kwargs 展開 dict：chat(messages, tools=X) → create(model=..., messages=..., tools=X)
         return openai_client.chat.completions.create(
-            model=MODEL, messages=messages, **kwargs
+            model=MODEL, messages=messages, max_tokens=4096, **kwargs
         )
 
     @app.get("/")
@@ -86,114 +91,86 @@ def register_routes(app, openai_client):
             "sources": [{"url": r["url"], "content": r["content"], "score": round(r.get("score", 0), 4)} for r in results["results"]],
         }
 
-    # ── Agent endpoint ──
-    # 這是整個 RAG 系統的核心：一個 agentic tool-calling loop。
-    # 跟上面的 /answer、/search 不同，Agent 不是寫死流程，
-    # 而是讓 LLM 自己決定要呼叫哪些工具、呼叫幾次。
-    #
-    # 流程概覽：
-    #   1. 把用戶問題 + system prompt（策略指令）丟給 LLM
-    #   2. LLM 回傳要呼叫的工具（或直接回答）
-    #   3. 我們執行工具，把結果塞回對話
-    #   4. 重複 2-3，直到 LLM 不再呼叫工具（代表它覺得資訊夠了）
-    #   5. 最多跑 5 輪，避免無限迴圈
     @app.delete("/memory/{session_id}")
     def api_clear_memory(session_id: str):
-        """清除指定 session 的對話記憶"""
         memory.pop(session_id, None)
+        agent_state.pop(session_id, None)
         return {"status": "cleared", "session_id": session_id}
 
-    @app.post("/agent")
-    def api_agent(req: QueryRequest):
-        # ── Step 0: Query Rewrite ──
-        # 用 LLM 把用戶的口語化問題改寫成更精準的搜尋 query
-        # 例如「台積電最近怎樣」→「TSMC 2024 recent stock performance revenue」
-        history = memory.get(req.session_id, [])
-        rewrite_response = chat([
-            {"role": "system", "content": (
-                "You are a query rewriter. Rewrite the user's question into a better search query "
-                "optimized for both vector database semantic search and web search. "
-                "Keep the original language if it's not English. "
-                "If there is conversation history, resolve pronouns and references (e.g. 'it', 'that', 'this') using context. "
-                "Output ONLY the rewritten query, nothing else."
-            )},
-            # *history 把對話記錄 list 展開塞進外層 list
-            # 例如 history = [{user: "A"}, {assistant: "B"}]
-            # → [system_msg, {user: "A"}, {assistant: "B"}, {user: 新問題}]
-            # 沒有 * 的話會變成 list 裡包 list，格式就壞了
-            *history,
-            {"role": "user", "content": req.query},
-        ])
-        rewritten_query = rewrite_response.choices[0].message.content.strip()
-        print(f"\n{'='*60}")
-        print(f"[Agent] Original query: {req.query}")
-        print(f"[Agent] Rewritten query: {rewritten_query}")
-        print(f"{'='*60}")
+    # ── 共用：跑一輪 agent（問 LLM → 執行工具 → 回傳結果或暫停） ──
+    def run_agent_round(state: dict) -> dict:
+        """執行一輪 agent loop。
+        回傳 status="thinking" 表示暫停等用戶確認，status="done" 表示最終回答。
+        """
+        messages = state["messages"]
+        all_sources = state["all_sources"]
+        tools_used = state["tools_used"]
+        round_num = state["round"]
 
-        # ── Step 1: Agentic tool-calling loop ──
-        messages: list[ChatCompletionMessageParam] = [
-            # ↓ 這就是「策略指令」：用自然語言告訴 LLM 行為優先順序
-            #   改這句話就能改變 Agent 的決策邏輯，不用動任何程式碼
-            {"role": "system", "content": "You are a helpful assistant with access to tools. ALWAYS search the local database (query_docs) first. Only use web_search if the database returns no relevant results. You may call multiple tools if needed. Be direct and concise in your final answer."},
-            # ↓ 把歷史對話塞進來，讓 LLM 知道之前聊過什麼
-            *history,
-            # ↓ 用改寫後的 query 讓搜尋更精準，但也附上原文讓 LLM 知道用戶真正在問什麼
-            {"role": "user", "content": f"Original question: {req.query}\n\nOptimized search query: {rewritten_query}"},
-        ]
-        all_sources: list[dict] = []
-        tools_used: list[str] = []
-
-        # ── Agentic Loop ──
-        # 每一輪：問 LLM → 它決定要不要用工具 → 執行工具 → 結果餵回去
-        # LLM 不呼叫工具時 = 它準備好回答了 → break
-        for round_num in range(5):
-            print(f"[Agent] Round {round_num + 1}: Asking LLM...")
-            try:
-                # 把可用工具列表 (AGENT_TOOLS) 傳給 LLM，讓它自己選
-                response = chat(messages, tools=AGENT_TOOLS)
-            except Exception as e:
-                # fallback：工具呼叫失敗就讓 LLM 直接回答
-                print(f"[Agent] Round {round_num + 1}: Tool call failed ({e}), retrying without tools")
-                response = chat(messages)
-                msg = response.choices[0].message
-                break
-            msg = response.choices[0].message
-
-            # LLM 沒有呼叫任何工具 → 代表它覺得資訊夠了，準備回答
-            if not msg.tool_calls:
-                print(f"[Agent] Round {round_num + 1}: No tool calls, generating answer")
-                break
-
-            # ── 執行 LLM 選擇的工具 ──
-            # LLM 回傳的 tool_calls 裡包含：工具名稱 + 參數（都是 LLM 自己決定的）
-            # 我們只負責「照做」，然後把結果塞回 messages 讓 LLM 繼續判斷
-            messages.append(cast(ChatCompletionMessageParam, msg.to_dict()))
-            for tc in msg.tool_calls:
-                if not isinstance(tc, ChatCompletionMessageToolCall):
-                    continue
-                args = _json.loads(tc.function.arguments)
-                print(f"[Agent] Round {round_num + 1}: {tc.function.name}({args})")
-                # TOOL_DISPATCH 是一個 dict，把工具名稱對應到實際函式
-                results = TOOL_DISPATCH[tc.function.name](args)
-                print(f"[Agent] Round {round_num + 1}: → {len(results)} results")
-                tools_used.append(tc.function.name)
-                all_sources.extend(results)
-                # 把工具執行結果以 "tool" role 塞回對話，LLM 下一輪會看到
-                messages.append(cast(ChatCompletionMessageParam, {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": _json.dumps(results, ensure_ascii=False),
-                }))
-        else:
-            # for-else：迴圈跑完 5 輪都沒 break → 強制要求 LLM 給最終答案
+        if round_num >= 5:
+            # 已達最大輪數，強制生成最終回答
             print(f"[Agent] Max rounds reached, forcing final answer")
             messages.append(cast(ChatCompletionMessageParam, {"role": "user", "content": "Please provide your final answer now based on all the information gathered."}))
             response = chat(messages)
-            msg = response.choices[0].message
+            return finish_agent(state, response.choices[0].message)
+
+        print(f"[Agent] Round {round_num + 1}: Asking LLM...")
+        try:
+            response = chat(messages, tools=AGENT_TOOLS)
+        except Exception as e:
+            print(f"[Agent] Round {round_num + 1}: Tool call failed ({e}), retrying without tools")
+            response = chat(messages)
+            return finish_agent(state, response.choices[0].message)
+
+        msg = response.choices[0].message
+
+        # LLM 沒呼叫工具 → 準備好回答了
+        if not msg.tool_calls:
+            print(f"[Agent] Round {round_num + 1}: No tool calls, generating answer")
+            return finish_agent(state, msg)
+
+        # ── 執行工具，但執行完後暫停，等用戶確認 ──
+        round_tools = []
+        round_sources = []
+        messages.append(cast(ChatCompletionMessageParam, msg.to_dict()))
+        for tc in msg.tool_calls:
+            if not isinstance(tc, ChatCompletionMessageToolCall):
+                continue
+            args = _json.loads(tc.function.arguments)
+            print(f"[Agent] Round {round_num + 1}: {tc.function.name}({args})")
+            results = TOOL_DISPATCH[tc.function.name](args)
+            print(f"[Agent] Round {round_num + 1}: → {len(results)} results")
+            tools_used.append(tc.function.name)
+            all_sources.extend(results)
+            round_tools.append({"name": tc.function.name, "args": args})
+            round_sources.extend(results)
+            messages.append(cast(ChatCompletionMessageParam, {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": _json.dumps(results, ensure_ascii=False),
+            }))
+
+        state["round"] = round_num + 1
+
+        # ── 暫停！回傳中間結果，等用戶按 Continue 或 Stop ──
+        print(f"[Agent] Round {round_num + 1}: Paused, waiting for user decision")
+        return {
+            "status": "thinking",
+            "round": round_num + 1,
+            "tools_called": round_tools,
+            "sources": round_sources,
+        }
+
+    def finish_agent(state: dict, msg) -> dict:
+        """Agent 結束：去重 sources、標記來源、儲存記憶、回傳最終答案"""
+        all_sources = state["all_sources"]
+        tools_used = state["tools_used"]
+        session_id = state["session_id"]
+        original_query = state["original_query"]
 
         print(f"[Agent] Done\n{'='*60}\n")
 
-        # 去重：同一段內容可能被不同工具重複回傳
+        # 去重
         seen = set()
         unique_sources = []
         for s in all_sources:
@@ -202,7 +179,7 @@ def register_routes(app, openai_client):
                 seen.add(key)
                 unique_sources.append(s)
 
-        # 標記這次回答的資料來源，讓前端顯示
+        # 來源標籤
         if "query_docs" in tools_used and "web_search" in tools_used:
             source_label = "DB + Web"
         elif "query_docs" in tools_used:
@@ -212,14 +189,86 @@ def register_routes(app, openai_client):
         else:
             source_label = "LLM"
 
-        # ── 儲存對話記憶 ──
-        # 只保留 user 和 assistant 的對話（不存 tool calls，太雜了）
-        # 這樣下次同一個 session 問問題時，LLM 會知道之前聊過什麼
-        history.append({"role": "user", "content": req.query})
+        # 儲存對話記憶
+        history = memory.get(session_id, [])
+        history.append({"role": "user", "content": original_query})
         history.append({"role": "assistant", "content": msg.content})
-        memory[req.session_id] = history
+        memory[session_id] = history
+
+        # 清除暫存的 agent state
+        agent_state.pop(session_id, None)
 
         return {
+            "status": "done",
             "answer": f"*[Source: {source_label}]*\n\n{msg.content}",
             "sources": unique_sources,
         }
+
+    # ── Agent endpoint（Human-in-the-loop 版）──
+    # 流程：
+    #   POST /agent       → 第一輪：query rewrite + 執行工具 → 暫停，回傳中間結果
+    #   POST /agent/continue → 用戶按 Continue → 繼續下一輪
+    #   POST /agent/stop     → 用戶按 Stop → 強制生成最終答案
+    #
+    # 每一輪執行完工具後暫停，讓用戶看到「Agent 用了什麼工具、搜到什麼結果」
+    # 用戶可以決定要不要讓 Agent 繼續思考，這就是 human-in-the-loop
+    @app.post("/agent")
+    def api_agent(req: QueryRequest):
+        # ── Step 0: Query Rewrite ──
+        history = memory.get(req.session_id, [])
+        rewrite_response = chat([
+            {"role": "system", "content": (
+                "You are a query rewriter. Rewrite the user's question into a better search query "
+                "optimized for both vector database semantic search and web search. "
+                "Keep the original language if it's not English. "
+                "If there is conversation history, resolve pronouns and references (e.g. 'it', 'that', 'this') using context. "
+                "Output ONLY the rewritten query, nothing else."
+            )},
+            *history,
+            {"role": "user", "content": req.query},
+        ])
+        rewritten_query = rewrite_response.choices[0].message.content.strip()
+        print(f"\n{'='*60}")
+        print(f"[Agent] Original query: {req.query}")
+        print(f"[Agent] Rewritten query: {rewritten_query}")
+        print(f"{'='*60}")
+
+        # 初始化 agent state，存起來讓 /continue 和 /stop 可以接著用
+        state = {
+            "session_id": req.session_id,
+            "original_query": req.query,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant with access to tools. ALWAYS search the local database (query_docs) first. Only use web_search if the database returns no relevant results. You may call multiple tools if needed. Be direct and concise in your final answer."},
+                *history,
+                {"role": "user", "content": f"Original question: {req.query}\n\nOptimized search query: {rewritten_query}"},
+            ],
+            "all_sources": [],
+            "tools_used": [],
+            "round": 0,
+        }
+        agent_state[req.session_id] = state
+
+        return run_agent_round(state)
+
+    class SessionRequest(BaseModel):
+        session_id: str = "default"
+
+    @app.post("/agent/continue")
+    def api_agent_continue(req: SessionRequest):
+        """用戶按 Continue → Agent 繼續下一輪工具呼叫"""
+        state = agent_state.get(req.session_id)
+        if not state:
+            return {"status": "error", "message": "No active agent session"}
+        return run_agent_round(state)
+
+    @app.post("/agent/stop")
+    def api_agent_stop(req: SessionRequest):
+        """用戶按 Stop → 強制讓 Agent 用目前收集到的資訊生成最終答案"""
+        state = agent_state.get(req.session_id)
+        if not state:
+            return {"status": "error", "message": "No active agent session"}
+        print(f"[Agent] User stopped, forcing final answer")
+        messages = state["messages"]
+        messages.append(cast(ChatCompletionMessageParam, {"role": "user", "content": "Please provide your final answer now based on all the information gathered."}))
+        response = chat(messages)
+        return finish_agent(state, response.choices[0].message)
