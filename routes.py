@@ -47,6 +47,10 @@ def register_routes(app, openai_client):
     def index():
         return FileResponse("index.html")
 
+    @app.get("/health")
+    def health():
+        return {"status": "ok"}
+
     @app.post("/query")
     def api_query(req: QueryRequest):
         return query_docs(req.query, req.n_results)
