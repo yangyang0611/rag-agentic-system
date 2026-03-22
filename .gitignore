@@ -17,3 +17,4 @@ chroma_db/
 data/
 docs/
 CLAUDE.md
+.mcp.json
