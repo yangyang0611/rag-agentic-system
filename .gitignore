@@ -15,3 +15,5 @@ wheels/
 # Local data
 chroma_db/
 data/
+docs/
+CLAUDE.md
