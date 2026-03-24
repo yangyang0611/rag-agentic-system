@@ -1,6 +1,6 @@
-# RAG MCP
+# RAG Agentic System
 
-A retrieval-augmented generation system that lets users ingest documents (web pages, PDFs), store them as vector embeddings, and query them with LLM-generated answers. The system exposes two interfaces from a single backend: a REST API with a web UI for end users, and an MCP (Model Context Protocol) server for AI agents.
+A retrieval-augmented generation system that lets users ingest documents (web pages, PDFs) into a vector database (ChromaDB), perform semantic search over them, and get LLM-generated answers grounded in retrieved context. The system exposes two interfaces from a single backend: a REST API with a web UI for end users, and an MCP (Model Context Protocol) server for AI agents like Claude.
 
 ## Architecture
 
@@ -31,6 +31,7 @@ A retrieval-augmented generation system that lets users ingest documents (web pa
 ```
 
 Both interfaces share the same ingestion pipeline, vector store, and tool implementations — no logic is duplicated.
+
 
 ## Key Engineering Decisions
 
