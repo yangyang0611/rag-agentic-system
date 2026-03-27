@@ -74,7 +74,8 @@ def build_agent_graph(openai_client: OpenAI, model_name: str = "google/gemini-2.
             {"role": "system", "content": (
                 "You are a helpful assistant with access to tools. "
                 "ALWAYS search the local database (query_docs) first. "
-                "Only use web_search if the database returns no relevant results. "
+                "If the question targets a specific section or topic, also try query_structured for precise section retrieval. "
+                "Only use web_search if local sources return no relevant results. "
                 "Be direct and concise in your final answer."
             )},
             {"role": "user", "content": f"Original question: {state['original_query']}\n\nOptimized search query: {rewritten}"},
@@ -221,14 +222,14 @@ def build_agent_graph(openai_client: OpenAI, model_name: str = "google/gemini-2.
 
         # Source label
         tu = state["tools_used"]
-        if "query_docs" in tu and "web_search" in tu:
-            label = "DB + Web"
-        elif "query_docs" in tu:
-            label = "DB"
-        elif "web_search" in tu:
-            label = "Web"
-        else:
-            label = "LLM"
+        labels = []
+        if "query_docs" in tu:
+            labels.append("DB")
+        if "query_structured" in tu:
+            labels.append("Structured")
+        if "web_search" in tu:
+            labels.append("Web")
+        label = " + ".join(labels) if labels else "LLM"
 
         state["status"] = "done"
         state["result"] = {

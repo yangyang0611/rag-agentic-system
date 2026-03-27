@@ -10,6 +10,10 @@ from ingester import ingest_file as _ingest_file, tavily_client
 from tools import ingest_url, query_docs, web_search, AGENT_TOOLS, TOOL_DISPATCH
 from langchain_ingester import langchain_ingest_url, langchain_ingest_pdf
 from langgraph_agent import build_agent_graph
+from structured_ingester import (
+    ingest_pdf_structured, ingest_url_structured,
+    get_all_toc, find_section,
+)
 
 
 class QueryRequest(BaseModel):
@@ -221,14 +225,17 @@ def register_routes(app, openai_client):
                 unique_sources.append(s)
 
         # 來源標籤
-        if "query_docs" in tools_used and "web_search" in tools_used:
-            source_label = "DB + Web"
-        elif "query_docs" in tools_used:
-            source_label = "DB"
-        elif "web_search" in tools_used:
-            source_label = "Web"
-        else:
-            source_label = "LLM"
+        has_db = "query_docs" in tools_used
+        has_web = "web_search" in tools_used
+        has_struct = "query_structured" in tools_used
+        labels = []
+        if has_db:
+            labels.append("DB")
+        if has_struct:
+            labels.append("Structured")
+        if has_web:
+            labels.append("Web")
+        source_label = " + ".join(labels) if labels else "LLM"
 
         # 儲存對話記憶
         history = memory.get(session_id, [])
@@ -279,7 +286,7 @@ def register_routes(app, openai_client):
             "session_id": req.session_id,
             "original_query": req.query,
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant with access to tools. ALWAYS search the local database (query_docs) first. Only use web_search if the database returns no relevant results. You may call multiple tools if needed. Be direct and concise in your final answer."},
+                {"role": "system", "content": "You are a helpful assistant with access to tools. ALWAYS search the local database (query_docs) first. If the question targets a specific section or topic, also try query_structured for precise section retrieval. Only use web_search if local sources return no relevant results. You may call multiple tools if needed. Be direct and concise in your final answer."},
                 *history,
                 {"role": "user", "content": f"Original question: {req.query}\n\nOptimized search query: {rewritten_query}"},
             ],
@@ -370,6 +377,70 @@ def register_routes(app, openai_client):
             langgraph_state.pop(req.session_id, None)
 
         return response_data
+
+    # ── Structured (Vectorless) Retrieval Endpoints ──
+
+    @app.post("/ingest-structured")
+    def api_ingest_structured(req: IngestRequest):
+        """Ingest a URL with structural parsing (heading-based tree)."""
+        return ingest_url_structured(req.url)
+
+    @app.post("/upload-structured")
+    def api_upload_structured(file: UploadFile):
+        """Upload PDF with structural parsing."""
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        result = ingest_pdf_structured(tmp_path, source=file.filename or "unknown.pdf")
+        os.unlink(tmp_path)
+        return result
+
+    @app.post("/query-structured")
+    def api_query_structured(req: QueryRequest):
+        """Query using LLM-based routing over document structure (TOC)."""
+        toc = get_all_toc()
+        if not toc:
+            return {"sections": [], "message": "No structured documents indexed."}
+
+        # Format TOC for LLM
+        toc_text = "\n".join(
+            f"{'  ' * (t['level'] - 1)}{i+1}. {t['title']}  [path: {t['path']}]"
+            for i, t in enumerate(toc)
+        )
+
+        # LLM picks the most relevant sections
+        routing_response = chat([
+            {"role": "system", "content": (
+                "You are a document section router. Given a document's table of contents "
+                "and a user query, select the 1-3 most relevant sections.\n\n"
+                "Return ONLY a JSON array of the section paths, e.g.:\n"
+                '["Experience > NVIDIA", "Skills"]\n\n'
+                "If no section is relevant, return an empty array []."
+            )},
+            {"role": "user", "content": f"Table of Contents:\n{toc_text}\n\nQuery: {req.query}"},
+        ])
+
+        # Parse LLM response
+        import json as _json
+        try:
+            selected_paths = _json.loads(routing_response.choices[0].message.content.strip())
+        except _json.JSONDecodeError:
+            selected_paths = []
+
+        # Retrieve section content
+        sections = []
+        for path in selected_paths[:req.n_results]:
+            node = find_section(path)
+            if node:
+                sections.append({
+                    "content": node.get_section_content(),
+                    "source": node.source,
+                    "section_path": node.path,
+                    "page": node.page,
+                })
+
+        return {"sections": sections, "toc": [t["title"] for t in toc]}
 
     @app.post("/agent-v2/stop")
     def api_agent_v2_stop(req: SessionRequest):
