@@ -353,6 +353,49 @@ async function agentV2Stop() {
   }
 }
 
+// ── Structured (Vectorless) Query ──
+
+async function queryStructured() {
+  const p = getQueryParams(); if (!p) return;
+  p.el.innerHTML = `<div class="status-msg loading">Routing query to document sections...</div>`;
+  try {
+    const res = await fetch(`${API}/query-structured`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: p.q, n_results: p.n, session_id: SESSION_ID }),
+    });
+    const data = await res.json();
+
+    if (!data.sections || data.sections.length === 0) {
+      p.el.innerHTML = `<div class="status-msg">No structured documents indexed. Ingest a document first.</div>`;
+      return;
+    }
+
+    const sectionsHtml = data.sections.map(s => `
+      <div class="answer-card" style="border-left: 3px solid #059669;">
+        <div style="margin-bottom: 8px;">
+          <strong style="color: #059669;">📍 ${s.section_path}</strong>
+          ${s.page ? `<span style="font-size: 12px; color: #888; margin-left: 8px;">Page ${s.page}</span>` : ""}
+        </div>
+        <div style="color: #ccc;">${marked.parse(s.content)}</div>
+        <div style="font-size: 12px; color: #666; margin-top: 8px;">Source: ${s.source}</div>
+      </div>
+    `).join("");
+
+    const tocHtml = data.toc ? `
+      <details style="margin-top: 12px;">
+        <summary style="color: #888; cursor: pointer; font-size: 13px;">Document TOC (${data.toc.length} sections)</summary>
+        <ul style="color: #888; font-size: 12px; margin-top: 4px;">
+          ${data.toc.map(t => `<li>${t}</li>`).join("")}
+        </ul>
+      </details>` : "";
+
+    p.el.innerHTML = sectionsHtml + tocHtml;
+  } catch (e) {
+    p.el.innerHTML = `<div class="status-msg error">Error: ${e.message}</div>`;
+  }
+}
+
 async function agentStop() {
   const el = document.getElementById("query-results");
   el.innerHTML = `<div class="status-msg loading">Generating final answer...</div>`;
