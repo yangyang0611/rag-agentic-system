@@ -40,6 +40,7 @@
         <button onclick="answer()">AI Answer (DB)</button>
         <button class="btn-web" onclick="webSearch()">AI Answer (Web)</button>
         <button class="btn-agent" onclick="agent()">Agent</button>
+        <button class="btn-agent" onclick="agentV2()" style="background:#7c3aed;">Agent v2</button>
         <button class="btn-secondary" onclick="clearMemory()" style="margin-left: auto;">Clear Memory</button>
         <span id="memory-status" style="font-size: 12px; color: #888;"></span>
       </div>
@@ -48,6 +49,7 @@
         <span class="btn-hint">AI Answer (DB): AI summarizes DB results</span>
         <span class="btn-hint">AI Answer (Web): AI summarizes live web results</span>
         <span class="btn-hint">Agent: AI autonomously picks tools to answer</span>
+        <span class="btn-hint">Agent v2: LangGraph agent with reflection</span>
       </div>
       <div id="query-results"></div>
     </div>
