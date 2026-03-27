@@ -14,6 +14,10 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "tavily-python>=0.7.23",
     "pymupdf>=1.27.2",
+    "langchain>=1.2.13",
+    "langchain-community>=0.4.1",
+    "langchain-text-splitters>=1.1.1",
+    "langgraph>=1.1.3",
 ]
 
 [project.scripts]
