@@ -15,6 +15,7 @@ wheels/
 # Local data
 chroma_db/
 data/
+struct_index/
 docs/
 CLAUDE.md
 .mcp.json
