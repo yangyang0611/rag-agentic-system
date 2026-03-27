@@ -1,6 +1,7 @@
 from openai.types.chat import ChatCompletionToolParam
 from mcp.server.fastmcp import FastMCP
 from ingester import ingest_url as _ingest_url, collection, model, tavily_client
+from structured_ingester import get_all_toc, find_section, _index_cache
 
 mcp = FastMCP("rag-mcp")
 
@@ -74,6 +75,52 @@ def web_search(query: str, n_results: int = 3) -> list[dict]:
     ]
 
 
+@mcp.tool()
+def query_structured(query: str, n_results: int = 2) -> list[dict]:
+    """Search documents by structure — finds exact sections by heading.
+
+    Uses the document's hierarchical structure (headings, sections) to find
+    precise sections. Best for questions targeting specific topics within
+    ingested documents.
+
+    Args:
+        query: Search query
+        n_results: Max sections to return (default 2)
+
+    Returns:
+        List of matching sections with content, source, and section path
+    """
+    # This is a placeholder — actual LLM-based routing is done in routes.py
+    # For MCP usage, do simple keyword matching on TOC
+    toc = get_all_toc()
+    if not toc:
+        return [{"content": "No structured documents indexed.", "url": "", "section_path": ""}]
+
+    query_lower = query.lower()
+    scored = []
+    for entry in toc:
+        title_lower = entry["title"].lower()
+        # Simple keyword overlap scoring
+        score = sum(1 for word in query_lower.split() if word in title_lower)
+        if score > 0:
+            scored.append((score, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_entries = scored[:n_results] if scored else [(0, toc[0])]
+
+    results = []
+    for _, entry in top_entries:
+        node = find_section(entry["path"])
+        if node:
+            results.append({
+                "content": node.get_section_content(),
+                "url": node.source,
+                "section_path": node.path,
+                "score": 1.0,
+            })
+    return results if results else [{"content": "No matching sections found.", "url": "", "section_path": ""}]
+
+
 AGENT_TOOLS: list[ChatCompletionToolParam] = [
     {
         "type": "function",
@@ -105,9 +152,25 @@ AGENT_TOOLS: list[ChatCompletionToolParam] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_structured",
+            "description": "Search documents by structure — finds exact sections by heading. Best for questions about specific topics within ingested documents. Returns complete sections rather than arbitrary text chunks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "n_results": {"type": "integer", "description": "Max sections to return", "default": 2},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 TOOL_DISPATCH = {
     "query_docs": lambda args: query_docs(args["query"], args.get("n_results", 3)),
     "web_search": lambda args: web_search(args["query"], args.get("n_results", 3)),
+    "query_structured": lambda args: query_structured(args["query"], args.get("n_results", 2)),
 }
