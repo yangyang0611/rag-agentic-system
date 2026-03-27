@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from ingester import ingest_file as _ingest_file, tavily_client
 from tools import ingest_url, query_docs, web_search, AGENT_TOOLS, TOOL_DISPATCH
+from langchain_ingester import langchain_ingest_url, langchain_ingest_pdf
+from langgraph_agent import build_agent_graph
 
 
 class QueryRequest(BaseModel):
@@ -29,6 +31,9 @@ memory: dict[str, list] = {}
 # Human-in-the-loop：Agent 每執行完一輪工具就暫停，等用戶決定要不要繼續
 # 這個 dict 存放每個 session 暫停時的完整狀態，讓 /agent/continue 可以接著跑
 agent_state: dict[str, dict] = {}
+
+# ── LangGraph Agent State ──
+langgraph_state: dict[str, dict] = {}
 
 def register_routes(app, openai_client):
     MODEL = "google/gemini-2.5-flash"
@@ -156,13 +161,45 @@ def register_routes(app, openai_client):
 
         state["round"] = round_num + 1
 
-        # ── 暫停！回傳中間結果，等用戶按 Continue 或 Stop ──
+        # ── Reflection：LLM 自我評估搜尋結果 ──
+        print(f"[Agent] Round {round_num + 1}: Reflecting...")
+        reflection_response = chat([
+            {"role": "system", "content": (
+                "You are a critical evaluator. Given the search results so far, assess:\n"
+                "1. Is the information SUFFICIENT to answer the original question?\n"
+                "2. Are there any CONTRADICTIONS in the results?\n"
+                "3. Should we search from a DIFFERENT ANGLE or with different keywords?\n\n"
+                "Respond in this JSON format:\n"
+                '{"sufficient": true/false, "reason": "brief explanation", "next_action": "answer" or "search_again", "suggested_query": "new query if searching again"}'
+            )},
+            {"role": "user", "content": (
+                f"Original question: {state['original_query']}\n\n"
+                f"Results gathered so far ({len(all_sources)} chunks from {round_num + 1} rounds):\n"
+                + "\n".join(f"- {s.get('content', '')[:200]}" for s in all_sources[-6:])
+            )},
+        ])
+        reflection_text = reflection_response.choices[0].message.content.strip()
+        print(f"[Agent] Reflection: {reflection_text[:200]}")
+
+        # 如果 reflection 建議換角度搜，把建議注入 messages
+        try:
+            reflection = _json.loads(reflection_text)
+            if reflection.get("next_action") == "search_again" and reflection.get("suggested_query"):
+                messages.append(cast(ChatCompletionMessageParam, {
+                    "role": "user",
+                    "content": f"The previous results were insufficient. Please search again with a different angle: {reflection['suggested_query']}",
+                }))
+        except _json.JSONDecodeError:
+            reflection_text = '{"sufficient": true, "reason": "could not parse", "next_action": "answer"}'
+
+        # ── 暫停！回傳中間結果 + reflection，等用戶按 Continue 或 Stop ──
         print(f"[Agent] Round {round_num + 1}: Paused, waiting for user decision")
         return {
             "status": "thinking",
             "round": round_num + 1,
             "tools_called": round_tools,
             "sources": round_sources,
+            "reflection": reflection_text,
         }
 
     def finish_agent(state: dict, msg) -> dict:
@@ -276,3 +313,76 @@ def register_routes(app, openai_client):
         messages.append(cast(ChatCompletionMessageParam, {"role": "user", "content": "Please provide your final answer now based on all the information gathered."}))
         response = chat(messages)
         return finish_agent(state, response.choices[0].message)
+
+    # ── LangChain Ingestion Endpoints ──
+
+    @app.post("/ingest/langchain")
+    def api_ingest_langchain(req: IngestRequest):
+        return langchain_ingest_url(req.url)
+
+    @app.post("/upload/langchain")
+    def api_upload_langchain(file: UploadFile):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        result = langchain_ingest_pdf(tmp_path, source=file.filename or "unknown.pdf")
+        os.unlink(tmp_path)
+        return result
+
+    # ── LangGraph Agent Endpoints (with Reflection) ──
+
+    run_initial, run_continue, run_stop = build_agent_graph(openai_client)
+
+    @app.post("/agent-v2")
+    def api_agent_v2(req: QueryRequest):
+        """LangGraph agent with reflection and HITL."""
+        history = memory.get(req.session_id, [])
+        state, response_data = run_initial(req.session_id, req.query, history)
+
+        if state["status"] == "paused":
+            langgraph_state[req.session_id] = state
+        elif state["status"] == "done":
+            # Save to conversation memory
+            hist = memory.get(req.session_id, [])
+            hist.append({"role": "user", "content": req.query})
+            hist.append({"role": "assistant", "content": response_data.get("answer", "")})
+            memory[req.session_id] = hist
+            langgraph_state.pop(req.session_id, None)
+
+        return response_data
+
+    @app.post("/agent-v2/continue")
+    def api_agent_v2_continue(req: SessionRequest):
+        state = langgraph_state.get(req.session_id)
+        if not state:
+            return {"status": "error", "message": "No active LangGraph agent session"}
+
+        state, response_data = run_continue(state)
+
+        if state["status"] == "paused":
+            langgraph_state[req.session_id] = state
+        elif state["status"] == "done":
+            hist = memory.get(req.session_id, [])
+            hist.append({"role": "user", "content": state["original_query"]})
+            hist.append({"role": "assistant", "content": response_data.get("answer", "")})
+            memory[req.session_id] = hist
+            langgraph_state.pop(req.session_id, None)
+
+        return response_data
+
+    @app.post("/agent-v2/stop")
+    def api_agent_v2_stop(req: SessionRequest):
+        state = langgraph_state.get(req.session_id)
+        if not state:
+            return {"status": "error", "message": "No active LangGraph agent session"}
+
+        state, response_data = run_stop(state)
+
+        hist = memory.get(req.session_id, [])
+        hist.append({"role": "user", "content": state["original_query"]})
+        hist.append({"role": "assistant", "content": response_data.get("answer", "")})
+        memory[req.session_id] = hist
+        langgraph_state.pop(req.session_id, None)
+
+        return response_data
