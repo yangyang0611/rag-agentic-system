@@ -1,6 +1,6 @@
 # RAG Agentic System
 
-A retrieval-augmented generation system that lets users ingest documents (web pages, PDFs) into a vector database (ChromaDB), perform semantic search over them, and get LLM-generated answers grounded in retrieved context. The system exposes two interfaces from a single backend: a REST API with a web UI for end users, and an MCP (Model Context Protocol) server for AI agents like Claude.
+A retrieval-augmented generation system that lets users ingest documents (web pages, PDFs) into a vector database (ChromaDB), perform semantic search over them, and get LLM-generated answers grounded in retrieved context. The system exposes two interfaces from a single backend: a REST API with a web UI for end users, and an MCP (Model Context Protocol) server for AI agents like Cline, Claude or Cursor.
 
 ## Architecture
 
