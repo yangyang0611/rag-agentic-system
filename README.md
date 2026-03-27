@@ -1,6 +1,6 @@
 # RAG Agentic System
 
-A retrieval-augmented generation system that lets users ingest documents (web pages, PDFs) into a vector database (ChromaDB), perform semantic search over them, and get LLM-generated answers grounded in retrieved context. The system exposes two interfaces from a single backend: a REST API with a web UI for end users, and an MCP (Model Context Protocol) server for AI agents like Cline, Claude or Cursor.
+A retrieval-augmented generation system with **two retrieval paths**: vector-based semantic search (ChromaDB) and structure-aware section retrieval (vectorless). Users can ingest documents (web pages, PDFs), query them through multiple strategies, and get LLM-generated answers grounded in retrieved context. The system exposes two interfaces from a single backend: a REST API with a web UI for end users, and an MCP (Model Context Protocol) server for AI agents like Cline, Claude or Cursor.
 
 ## Architecture
 
@@ -18,16 +18,17 @@ A retrieval-augmented generation system that lets users ingest documents (web pa
 │  │ /ingest      │───▶│ ingest_url()              │ │
 │  │ /upload      │    │ query_docs()              │ │
 │  │ /query       │───▶│ web_search()              │ │
-│  │ /ask-db      │    └───────────────────────────┘ │
-│  │ /search      │                                  │
+│  │ /ask-db      │    │ query_structured()        │ │
+│  │ /search      │    └───────────────────────────┘ │
+│  │ /query-structured │                             │
 │  │ /agent       │──▶ Agent Loop (hand-rolled)      │
 │  │ /agent-v2    │──▶ Agent Loop (LangGraph)        │
 │  └──────────────┘                                  │
-└──────┬──────────────────┬──────────────────┬───────┘
-       ▼                  ▼                  ▼
-    Tavily API        ChromaDB           OpenRouter
-    (web scraping     (vector store,     (LLM inference via
-     + web search)    HNSW + cosine)     OpenAI-compatible API)
+└──────┬──────────────┬──────────────┬───────────┬───┘
+       ▼              ▼              ▼           ▼
+    Tavily API    ChromaDB       Struct Index  OpenRouter
+    (web scraping (vector store, (JSON trees,  (LLM inference via
+     + web search) HNSW+cosine)  vectorless)  OpenAI-compatible API)
 ```
 
 Both interfaces share the same ingestion pipeline, vector store, and tool implementations — no logic is duplicated.
@@ -73,6 +74,36 @@ PDF → PyMuPDF extract → same chunking/embedding pipeline
 
 Before searching, the agent rewrites the user's raw question into a search-optimized query. For multi-turn conversations, it resolves pronouns and references using session history (e.g., "tell me more about it" → "tell me more about [specific topic from previous turn]").
 
+### Structure-Aware Retrieval (Vectorless)
+
+A second retrieval path that doesn't use vector embeddings at all. Instead of chunking text blindly, it parses documents into a **hierarchical tree (DocNode)** based on headings:
+
+```
+Document
+├── Experience          (heading, level 1)
+│   ├── NVIDIA          (heading, level 2)
+│   │   └── paragraph: "Developed test automation..."
+│   └── Previous Co.    (heading, level 2)
+│       └── paragraph: "Built data processing..."
+└── Education           (heading, level 1)
+    └── paragraph: "M.S. in ..."
+```
+
+**Why this matters:** Vector search on flat chunks can mix content from different sections (e.g., a chunk containing text from both "NVIDIA" and "Previous Company"). Structure-aware retrieval preserves document boundaries — asking "What did he do at NVIDIA?" returns only content under that specific heading.
+
+**How it works:**
+1. **Parsing** — PDF: PyMuPDF `get_text("dict")` detects headings by font size relative to body text. HTML: BeautifulSoup parses `<h1>`-`<h6>` tags.
+2. **Indexing** — The tree is stored as a JSON file (`./struct_index/`), no embedding computation needed.
+3. **Query routing** — The LLM receives only the document's **table of contents** (heading titles, ~1KB) and selects the most relevant sections. This costs minimal tokens while providing accurate routing.
+4. **Retrieval** — The selected heading node's full content is recursively collected and returned.
+
+| | Vector-based (`query_docs`) | Structure-aware (`query_structured`) |
+|---|---|---|
+| Index | Embedding vectors in ChromaDB | Heading tree as JSON |
+| Search | Cosine similarity | LLM routes via TOC |
+| Returns | Arbitrary text chunks | Complete sections with exact boundaries |
+| Best for | Semantic similarity across unstructured text | Precise section lookup in structured documents |
+
 ## Tech Stack
 
 | Component | Technology |
@@ -82,7 +113,8 @@ Before searching, the agent rewrites the user's raw question into a search-optim
 | Embeddings | sentence-transformers (`BAAI/bge-large-en-v1.5`) |
 | LLM | OpenRouter API via OpenAI SDK (swappable — any OpenAI-compatible endpoint) |
 | Web data | Tavily API (page extraction + web search) |
-| PDF parsing | PyMuPDF |
+| PDF parsing | PyMuPDF (text extraction + font-based heading detection) |
+| HTML parsing | BeautifulSoup (structural heading extraction) |
 | Agent framework | LangGraph (state graph with conditional edges) |
 | Agent protocol | MCP (Model Context Protocol) |
 | Frontend | Vanilla JS, marked.js |
@@ -93,7 +125,8 @@ Before searching, the agent rewrites the user's raw question into a search-optim
 main.py                # FastAPI + MCP server init, LLM client config
 routes.py              # REST endpoints, hand-rolled agent loop, session memory
 tools.py               # MCP tool definitions + agent tool dispatch table
-ingester.py            # Document pipeline: fetch → chunk → embed → store
+ingester.py            # Vector pipeline: fetch → chunk → embed → store
+structured_ingester.py # Structural pipeline: parse headings → DocNode tree → JSON index
 langgraph_agent.py     # LangGraph agent: state graph with reflection nodes
 langchain_ingester.py  # Alternative ingestion via LangChain loaders
 index.html             # Web UI (single page)
