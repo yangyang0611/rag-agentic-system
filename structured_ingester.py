@@ -11,6 +11,7 @@ Pipeline:
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, field, asdict
 from statistics import mode
 
@@ -102,19 +103,47 @@ def _detect_body_font_size(doc: fitz.Document) -> float:
         return sorted(sizes)[len(sizes) // 2]
 
 
+# Regex for numbered headings: "1.", "1.1", "1.1.1", "Chapter 1", "Section 2.3"
+_NUMBERED_HEADING_RE = re.compile(
+    r"^(?:(?:Chapter|Section|Part)\s+)?\d+(?:\.\d+)*\.?\s+\S",
+    re.IGNORECASE,
+)
+
+
 def _is_heading(span_size: float, body_size: float, text: str, is_bold: bool) -> int | None:
-    """Determine if a text span is a heading. Returns heading level or None."""
-    if len(text.strip()) < 2 or len(text.strip()) > 200:
+    """Determine if a text span is a heading. Returns heading level or None.
+
+    Uses multiple heuristics:
+    1. Font size relative to body text (primary)
+    2. ALL CAPS detection (fallback)
+    3. Numbered heading patterns like "1.1 Introduction" (fallback)
+    """
+    stripped = text.strip()
+    if len(stripped) < 2 or len(stripped) > 200:
         return None
 
     size_ratio = span_size / body_size if body_size > 0 else 1.0
 
+    # Primary: font size based detection
     if size_ratio >= 1.6:
         return 1
     elif size_ratio >= 1.3:
         return 2
-    elif size_ratio >= 1.1 or (is_bold and size_ratio >= 1.0 and len(text.strip()) < 80):
+    elif size_ratio >= 1.1 or (is_bold and size_ratio >= 1.0 and len(stripped) < 80):
         return 3
+
+    # Fallback: ALL CAPS lines (short, no lowercase) → likely a heading
+    if (stripped.isupper() and len(stripped) < 60
+            and len(stripped.split()) <= 8 and not stripped.startswith("-")):
+        return 1
+
+    # Fallback: numbered headings like "1.1 Introduction"
+    if _NUMBERED_HEADING_RE.match(stripped) and len(stripped) < 80:
+        # Count dots to estimate depth: "1" → level 1, "1.1" → level 2
+        num_part = stripped.split()[0].rstrip(".")
+        depth = num_part.count(".") + 1
+        return min(depth, 3)
+
     return None
 
 
@@ -308,6 +337,168 @@ def _process_html_element(element, heading_tags, heading_stack, root, source):
             _process_html_element(child, heading_tags, heading_stack, root, source)
 
 
+# ── Markdown Structural Parsing ──
+
+def parse_markdown_structure(text: str, source: str = "") -> DocNode:
+    """Parse Markdown into a hierarchical DocNode tree based on # headings."""
+    source = source or "markdown"
+
+    root = DocNode(
+        id=hashlib.md5(source.encode()).hexdigest(),
+        type="document",
+        level=0,
+        title=source,
+        content="",
+        source=source,
+        path=source,
+    )
+
+    heading_stack: list[tuple[int, DocNode]] = [(0, root)]
+    current_paragraphs: list[str] = []
+
+    def flush_paragraph():
+        nonlocal current_paragraphs
+        if not current_paragraphs:
+            return
+        text_block = "\n".join(current_paragraphs)
+        parent = heading_stack[-1][1]
+        para_id = hashlib.md5(f"{source}_{parent.path}_{len(parent.children)}".encode()).hexdigest()
+        parent.children.append(DocNode(
+            id=para_id,
+            type="paragraph",
+            level=parent.level + 1,
+            title=text_block[:80] + ("..." if len(text_block) > 80 else ""),
+            content=text_block,
+            source=source,
+            path=parent.path,
+        ))
+        current_paragraphs = []
+
+    heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
+
+    for line in text.splitlines():
+        match = heading_re.match(line)
+        if match:
+            flush_paragraph()
+            heading_level = len(match.group(1))  # number of '#' characters
+            heading_text = match.group(2).strip()
+
+            while heading_stack and heading_stack[-1][0] >= heading_level:
+                heading_stack.pop()
+
+            parent = heading_stack[-1][1] if heading_stack else root
+            path = f"{parent.path} > {heading_text}" if parent.path != source else heading_text
+
+            heading_node = DocNode(
+                id=hashlib.md5(f"{source}_{path}".encode()).hexdigest(),
+                type="heading",
+                level=heading_level,
+                title=heading_text,
+                content="",
+                source=source,
+                path=path,
+            )
+            parent.children.append(heading_node)
+            heading_stack.append((heading_level, heading_node))
+        else:
+            stripped = line.strip()
+            if stripped:
+                current_paragraphs.append(stripped)
+            elif current_paragraphs:
+                # Empty line = paragraph break
+                flush_paragraph()
+
+    flush_paragraph()
+    return root
+
+
+# ── Word (.docx) Structural Parsing ──
+
+def parse_docx_structure(path: str, source: str = "") -> DocNode:
+    """Parse a Word document into a hierarchical DocNode tree based on heading styles."""
+    from docx import Document as DocxDocument
+
+    source = source or os.path.basename(path)
+    doc = DocxDocument(path)
+
+    root = DocNode(
+        id=hashlib.md5(source.encode()).hexdigest(),
+        type="document",
+        level=0,
+        title=source,
+        content="",
+        source=source,
+        path=source,
+    )
+
+    heading_stack: list[tuple[int, DocNode]] = [(0, root)]
+    current_paragraphs: list[str] = []
+
+    def flush_paragraph():
+        nonlocal current_paragraphs
+        if not current_paragraphs:
+            return
+        text = "\n".join(current_paragraphs)
+        parent = heading_stack[-1][1]
+        para_id = hashlib.md5(f"{source}_{parent.path}_{len(parent.children)}".encode()).hexdigest()
+        parent.children.append(DocNode(
+            id=para_id,
+            type="paragraph",
+            level=parent.level + 1,
+            title=text[:80] + ("..." if len(text) > 80 else ""),
+            content=text,
+            source=source,
+            path=parent.path,
+        ))
+        current_paragraphs = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            if current_paragraphs:
+                flush_paragraph()
+            continue
+
+        # Word heading styles: "Heading 1", "Heading 2", etc.
+        style_name = para.style.name if para.style else ""
+        heading_level = None
+        if style_name.startswith("Heading"):
+            try:
+                heading_level = int(style_name.split()[-1])
+            except (ValueError, IndexError):
+                pass
+        # Also detect "Title" style as level 1
+        if style_name == "Title":
+            heading_level = 1
+
+        if heading_level is not None:
+            flush_paragraph()
+
+            while heading_stack and heading_stack[-1][0] >= heading_level:
+                heading_stack.pop()
+
+            parent = heading_stack[-1][1] if heading_stack else root
+            path = f"{parent.path} > {text}" if parent.path != source else text
+
+            heading_node = DocNode(
+                id=hashlib.md5(f"{source}_{path}".encode()).hexdigest(),
+                type="heading",
+                level=heading_level,
+                title=text,
+                content="",
+                source=source,
+                path=path,
+            )
+            parent.children.append(heading_node)
+            heading_stack.append((heading_level, heading_node))
+        else:
+            if len(text) >= 3:
+                current_paragraphs.append(text)
+
+    flush_paragraph()
+    return root
+
+
 # ── Persistence ──
 
 def _source_id(source: str) -> str:
@@ -382,6 +573,47 @@ def ingest_url_structured(url: str) -> dict:
         "sections_indexed": len(toc),
         "toc": [t["title"] for t in toc],
     }
+
+
+def ingest_markdown_structured(path: str, source: str = "") -> dict:
+    """Parse a Markdown file into structural tree and save to index."""
+    source = source or os.path.basename(path)
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    root = parse_markdown_structure(text, source)
+    save_index(root)
+    toc = root.get_toc()
+    return {
+        "source": source,
+        "sections_indexed": len(toc),
+        "toc": [t["title"] for t in toc],
+    }
+
+
+def ingest_docx_structured(path: str, source: str = "") -> dict:
+    """Parse a Word document into structural tree and save to index."""
+    source = source or os.path.basename(path)
+    root = parse_docx_structure(path, source)
+    save_index(root)
+    toc = root.get_toc()
+    return {
+        "source": source,
+        "sections_indexed": len(toc),
+        "toc": [t["title"] for t in toc],
+    }
+
+
+def ingest_file_structured(path: str, source: str = "") -> dict:
+    """Auto-detect file type and ingest with structural parsing."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        return ingest_pdf_structured(path, source)
+    elif ext in (".md", ".markdown"):
+        return ingest_markdown_structured(path, source)
+    elif ext in (".docx",):
+        return ingest_docx_structured(path, source)
+    else:
+        raise ValueError(f"Unsupported file type: {ext}. Supported: .pdf, .md, .docx")
 
 
 # Load existing indexes on import
