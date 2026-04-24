@@ -1,19 +1,28 @@
-"""LangChain-based ingestion path — parallel to the hand-built ingester.py.
+"""Fully LangChain-based ingestion.
 
-Uses LangChain Document Loaders and Text Splitters for modular document processing,
-while sharing the same ChromaDB collection and embedding model.
+Uses LangChain Document Loaders, Text Splitters, HuggingFace Embeddings,
+and Chroma vector store — no dependency on ingester.py.
 """
 
 import hashlib
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import WebBaseLoader, PyMuPDFLoader
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
-from ingester import collection, model  # reuse same vector store & embeddings
 
+embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en-v1.5")
+
+vectorstore = Chroma(
+    collection_name="webpages",
+    embedding_function=embeddings,
+    persist_directory="./chroma_db",
+    collection_metadata={"hnsw:space": "cosine"},
+)
 
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=2000,       # characters (≈500 words)
+    chunk_size=2000,
     chunk_overlap=200,
     length_function=len,
 )
@@ -25,16 +34,11 @@ def langchain_ingest_url(url: str) -> dict:
     docs = loader.load()
     chunks = splitter.split_documents(docs)
 
-    texts = [c.page_content for c in chunks]
-    embeddings = model.encode(texts).tolist()
-    ids = [hashlib.md5(f"lc_{url}_{i}".encode()).hexdigest() for i in range(len(chunks))]
+    for i, c in enumerate(chunks):
+        c.metadata = {"url": url, "chunk_index": i, "loader": "langchain"}
 
-    collection.upsert(
-        ids=ids,
-        embeddings=embeddings,
-        documents=texts,
-        metadatas=[{"url": url, "chunk_index": i, "loader": "langchain"} for i in range(len(chunks))],
-    )
+    ids = [hashlib.md5(f"lc_{url}_{i}".encode()).hexdigest() for i in range(len(chunks))]
+    vectorstore.add_documents(chunks, ids=ids)
     return {"url": url, "chunks_stored": len(chunks), "loader": "langchain"}
 
 
@@ -45,14 +49,9 @@ def langchain_ingest_pdf(path: str, source: str = "") -> dict:
     docs = loader.load()
     chunks = splitter.split_documents(docs)
 
-    texts = [c.page_content for c in chunks]
-    embeddings = model.encode(texts).tolist()
-    ids = [hashlib.md5(f"lc_{source}_{i}".encode()).hexdigest() for i in range(len(chunks))]
+    for i, c in enumerate(chunks):
+        c.metadata = {"url": source, "chunk_index": i, "loader": "langchain"}
 
-    collection.upsert(
-        ids=ids,
-        embeddings=embeddings,
-        documents=texts,
-        metadatas=[{"url": source, "chunk_index": i, "loader": "langchain"} for i in range(len(chunks))],
-    )
+    ids = [hashlib.md5(f"lc_{source}_{i}".encode()).hexdigest() for i in range(len(chunks))]
+    vectorstore.add_documents(chunks, ids=ids)
     return {"file": source, "chunks_stored": len(chunks), "loader": "langchain"}
