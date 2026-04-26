@@ -20,3 +20,6 @@ docs/
 CLAUDE.md
 .mcp.json
 resume_YiTingYang.pdf
+
+# POC / scripts output
+scripts/out/

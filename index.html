@@ -52,6 +52,18 @@
             <span class="btn-hint">PDF upload extracts text, tables, and chart or image summaries by default.</span>
           </div>
           <div id="upload-result" class="status-msg"></div>
+          <div class="input-row input-row-spaced">
+            <input id="audio-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.webm" />
+            <select id="audio-lang">
+              <option value="en">English</option>
+              <option value="zh">中文</option>
+            </select>
+            <button onclick="uploadAudio()">Upload Audio</button>
+          </div>
+          <div class="btn-hints btn-hints-tight">
+            <span class="btn-hint">Audio upload transcribes via Whisper (large-v3) and indexes with timestamps. Earnings calls, podcasts.</span>
+          </div>
+          <div id="audio-result" class="status-msg"></div>
         </div>
 
         <div class="section section-accent-coral">

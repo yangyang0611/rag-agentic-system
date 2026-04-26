@@ -14,6 +14,7 @@ from structured_ingester import (
     ingest_pdf_structured, ingest_url_structured,
     get_all_toc, find_section,
 )
+from audio_ingester import ingest_audio as _ingest_audio
 
 
 class QueryRequest(BaseModel):
@@ -86,6 +87,25 @@ def register_routes(app, openai_client):
             tmp_path = tmp.name
         result = _ingest_pdf_multimodal(tmp_path, source=file.filename or "unknown.pdf")
         os.unlink(tmp_path)
+        return result
+
+    @app.post("/ingest-audio")
+    def api_ingest_audio(file: UploadFile, language: str = "en"):
+        import tempfile, os
+        from pathlib import Path
+        # 保留原副檔名讓 ffmpeg 正確識別格式
+        suffix = Path(file.filename or "").suffix or ".mp3"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        try:
+            result = _ingest_audio(
+                tmp_path,
+                source=file.filename or "unknown_audio",
+                language=language,
+            )
+        finally:
+            os.unlink(tmp_path)
         return result
 
     @app.post("/ask-db")

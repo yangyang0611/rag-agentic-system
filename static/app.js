@@ -58,6 +58,40 @@ async function uploadPdf() {
   }
 }
 
+async function uploadAudio() {
+  const fileInput = document.getElementById("audio-file");
+  const langSelect = document.getElementById("audio-lang");
+  const el = document.getElementById("audio-result");
+  if (!fileInput.files.length) { el.textContent = "Please select an audio file."; el.className = "status-msg error"; return; }
+  const file = fileInput.files[0];
+  const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+  el.textContent = `Transcribing ${file.name} (${sizeMb} MB) — this may take 30s to a few minutes...`;
+  el.className = "status-msg loading";
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${API}/ingest-audio?language=${langSelect.value}`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Transcription failed");
+    const dur = Math.round(data.audio_duration || 0);
+    const mins = Math.floor(dur / 60), secs = dur % 60;
+    el.innerHTML = `
+      <div class="status-msg success">
+        ${data.chunks_stored} chunks stored from ${data.source}
+        (${mins}m${secs}s audio, ${data.language})
+      </div>
+      <details style="margin-top:8px;">
+        <summary>Transcript preview</summary>
+        <div class="result-content" style="margin-top:6px;">${data.preview || "(empty)"}</div>
+      </details>`;
+  } catch (e) {
+    el.textContent = `Error: ${e.message}`; el.className = "status-msg error";
+  }
+}
+
 async function ingest() {
   const url = document.getElementById("ingest-url").value.trim();
   const el = document.getElementById("ingest-result");
