@@ -47,6 +47,8 @@ def query_docs(query: str, n_results: int = 2) -> list[dict]:
             "content": doc,
             "url": meta.get("url", ""),
             "chunk_index": meta.get("chunk_index", 0),
+            "page": meta.get("page"),
+            "content_type": meta.get("content_type", "text"),
             "score": round(1 - dist, 4),
         }
         for doc, meta, dist in zip(docs, metadatas, distances)

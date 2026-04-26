@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionMessageToolCall
 from pydantic import BaseModel
 
-from ingester import ingest_file as _ingest_file, tavily_client
+from ingester import ingest_file as _ingest_file, ingest_pdf_multimodal as _ingest_pdf_multimodal, tavily_client
 from tools import ingest_url, query_docs, web_search, AGENT_TOOLS, TOOL_DISPATCH
 from langchain_ingester import langchain_ingest_url, langchain_ingest_pdf
 from langgraph_agent import build_agent_graph
@@ -74,7 +74,17 @@ def register_routes(app, openai_client):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file.file.read())
             tmp_path = tmp.name
-        result = _ingest_file(tmp_path, source=file.filename or "unknown.pdf")
+        result = _ingest_pdf_multimodal(tmp_path, source=file.filename or "unknown.pdf")
+        os.unlink(tmp_path)
+        return result
+
+    @app.post("/upload-multimodal")
+    def api_upload_multimodal(file: UploadFile):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        result = _ingest_pdf_multimodal(tmp_path, source=file.filename or "unknown.pdf")
         os.unlink(tmp_path)
         return result
 

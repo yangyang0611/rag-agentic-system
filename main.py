@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 load_dotenv()
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -29,4 +30,4 @@ register_routes(app, openai_client)
 
 
 if __name__ == "__main__":
-    mcp.run()
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)

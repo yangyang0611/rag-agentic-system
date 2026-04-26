@@ -1,6 +1,21 @@
 const API = "http://localhost:8000";
 const SESSION_ID = crypto.randomUUID();
 
+function renderDecisionPrompt(label, confirmText, confirmClass, confirmAction, cancelAction) {
+  return `
+    <div class="save-prompt">
+      <span class="prompt-label">${label}</span>
+      <button class="${confirmClass}" onclick="${confirmAction}">${confirmText}</button>
+      <button class="btn-secondary" onclick="${cancelAction}">No</button>
+    </div>`;
+}
+
+function renderToolChips(toolsCalled) {
+  return toolsCalled.map(t =>
+    `<span class="tool-chip">${t.name}(${JSON.stringify(t.args)})</span>`
+  ).join(" ");
+}
+
 async function clearMemory() {
   await fetch(`${API}/memory/${SESSION_ID}`, { method: "DELETE" });
   document.getElementById("memory-status").textContent = "Memory cleared.";
@@ -30,13 +45,13 @@ async function uploadPdf() {
   const fileInput = document.getElementById("pdf-file");
   const el = document.getElementById("upload-result");
   if (!fileInput.files.length) { el.textContent = "Please select a PDF."; el.className = "status-msg error"; return; }
-  el.textContent = "Uploading..."; el.className = "status-msg loading";
+  el.textContent = "Uploading and extracting text, tables, and visuals..."; el.className = "status-msg loading";
   try {
     const formData = new FormData();
     formData.append("file", fileInput.files[0]);
     const res = await fetch(`${API}/upload`, { method: "POST", body: formData });
     const data = await res.json();
-    el.textContent = `${data.chunks_stored} chunks stored from ${data.file}`;
+    el.textContent = `${data.chunks_stored || 0} text chunks, ${data.tables_stored || 0} tables, ${data.visuals_stored || 0} visual summaries stored from ${data.file}`;
     el.className = "status-msg success";
   } catch (e) {
     el.textContent = `Error: ${e.message}`; el.className = "status-msg error";
@@ -80,7 +95,7 @@ function renderSources(sources) {
       <summary>View ${sources.length} sources</summary>
       ${sources.map((r, i) => `
         <div class="result-card">
-          <div class="result-meta">#${i+1} &middot; score: ${r.score} &middot; <a href="${r.url}" target="_blank">${r.url}</a></div>
+          <div class="result-meta">#${i+1} &middot; score: ${r.score} &middot; type: ${r.content_type || "text"}${r.page ? ` &middot; page: ${r.page}` : ""} &middot; <a href="${r.url}" target="_blank">${r.url}</a></div>
           <div class="result-content">${r.content}</div>
         </div>
       `).join("")}
@@ -99,7 +114,7 @@ async function query() {
     const results = await res.json();
     p.el.innerHTML = results.map((r, i) => `
       <div class="result-card">
-        <div class="result-meta">#${i+1} &middot; score: ${r.score} &middot; chunk: ${r.chunk_index} &middot; <a href="${r.url}" target="_blank">${r.url}</a></div>
+        <div class="result-meta">#${i+1} &middot; score: ${r.score} &middot; type: ${r.content_type || "text"}${r.chunk_index !== undefined ? ` &middot; chunk: ${r.chunk_index}` : ""}${r.page ? ` &middot; page: ${r.page}` : ""} &middot; <a href="${r.url}" target="_blank">${r.url}</a></div>
         <div class="result-content">${r.content}</div>
       </div>
     `).join("");
@@ -140,12 +155,15 @@ async function webSearch() {
     });
     const data = await res.json();
     const webUrls = data.sources.filter(s => s.url && s.url.startsWith("http"));
-    const saveBtn = webUrls.length ? `
-      <div class="save-prompt" style="margin-top: 12px;">
-        <span style="font-size: 13px; color: #ccc;">Save these web sources to DB?</span>
-        <button class="btn-agent" style="padding: 6px 14px; font-size: 12px; margin-left: 8px;" onclick="saveSourcesToDB(this)">Yes</button>
-        <button class="btn-secondary" style="padding: 6px 14px; font-size: 12px; margin-left: 4px;" onclick="this.parentElement.innerHTML='<span style=\\'font-size:13px;color:#888;\\'>Skipped.</span>'">No</button>
-      </div>` : "";
+    const saveBtn = webUrls.length
+      ? renderDecisionPrompt(
+          "Save these web sources to DB?",
+          "Yes",
+          "btn-agent",
+          "saveSourcesToDB(this)",
+          "this.parentElement.innerHTML='<span class=\\'prompt-note\\'>Skipped.</span>'",
+        )
+      : "";
     window._pendingSources = webUrls;
     p.el.innerHTML = `
       <div class="answer-card web">
@@ -166,49 +184,46 @@ async function webSearch() {
 function renderReflection(reflectionText) {
   try {
     const ref = JSON.parse(reflectionText);
-    const color = ref.sufficient ? "#22c55e" : "#f59e0b";
+    const boxClass = ref.sufficient ? "reflection-box success" : "reflection-box";
     return `
-      <div style="margin: 8px 0; padding: 8px; background: #1a1a2e; border-left: 3px solid ${color}; border-radius: 4px;">
-        <strong style="color:${color};">Reflection:</strong>
-        <span style="color:#ccc;"> ${ref.reason}</span>
-        ${ref.suggested_query ? `<div style="margin-top:4px;font-size:12px;color:#888;">Next query: "${ref.suggested_query}"</div>` : ""}
-        <div style="margin-top:4px;font-size:12px;color:#888;">Decision: ${ref.next_action} | Sufficient: ${ref.sufficient}</div>
+      <div class="${boxClass}">
+        <strong class="reflection-title">Reflection:</strong>
+        <span>${ref.reason}</span>
+        ${ref.suggested_query ? `<div class="reflection-meta">Next query: "${ref.suggested_query}"</div>` : ""}
+        <div class="reflection-meta">Decision: ${ref.next_action} | Sufficient: ${ref.sufficient}</div>
       </div>`;
   } catch (e) {
-    return reflectionText ? `<div style="margin:8px 0;padding:8px;background:#1a1a2e;border-radius:4px;color:#ccc;font-size:13px;">${reflectionText}</div>` : "";
+    return reflectionText ? `<div class="reflection-box"><span>${reflectionText}</span></div>` : "";
   }
 }
 
 function renderAgentThinking(data, el) {
-  const toolsSummary = data.tools_called.map(t =>
-    `<span style="background:#2d2d2d;padding:2px 8px;border-radius:4px;font-size:12px;">${t.name}(${JSON.stringify(t.args)})</span>`
-  ).join(" ");
+  const toolsSummary = renderToolChips(data.tools_called);
   const reflectionHtml = data.reflection ? renderReflection(data.reflection) : "";
   el.innerHTML = `
-    <div class="answer-card" style="border-left: 3px solid #f59e0b;">
+    <div class="answer-card agent">
       <strong>Agent Round ${data.round}</strong>
-      <div style="margin: 8px 0;">Tools called: ${toolsSummary}</div>
+      <div class="tool-row">Tools called: ${toolsSummary}</div>
       ${reflectionHtml}
     </div>
     ${data.sources.length ? renderSources(data.sources) : ""}
-    <div class="save-prompt" style="margin-top: 12px;">
-      <span style="font-size: 13px; color: #ccc;">Continue or stop here?</span>
-      <button class="btn-agent" style="padding: 6px 14px; font-size: 12px; margin-left: 8px;" onclick="agentContinue()">Continue</button>
-      <button class="btn-secondary" style="padding: 6px 14px; font-size: 12px; margin-left: 4px;" onclick="agentStop()">Stop & Answer</button>
-    </div>`;
+    ${renderDecisionPrompt("Continue or stop here?", "Continue", "btn-agent", "agentContinue()", "agentStop()")}`;
 }
 
 function renderAgentDone(data, el) {
   const webUrls = data.sources.filter(s => s.url && s.url.startsWith("http"));
-  const saveBtn = webUrls.length ? `
-    <div class="save-prompt" style="margin-top: 12px;">
-      <span style="font-size: 13px; color: #ccc;">Save these web sources to DB?</span>
-      <button class="btn-agent" style="padding: 6px 14px; font-size: 12px; margin-left: 8px;" onclick="saveSourcesToDB(this)">Yes</button>
-      <button class="btn-secondary" style="padding: 6px 14px; font-size: 12px; margin-left: 4px;" onclick="this.parentElement.innerHTML='<span style=\\'font-size:13px;color:#888;\\'>Skipped.</span>'">No</button>
-    </div>` : "";
+  const saveBtn = webUrls.length
+    ? renderDecisionPrompt(
+        "Save these web sources to DB?",
+        "Yes",
+        "btn-agent",
+        "saveSourcesToDB(this)",
+        "this.parentElement.innerHTML='<span class=\\'prompt-note\\'>Skipped.</span>'",
+      )
+    : "";
   window._pendingSources = webUrls;
   el.innerHTML = `
-    <div class="answer-card" style="border-left: 3px solid #f59e0b;">
+    <div class="answer-card agent">
       <strong>Agent Answer</strong>
       <div>${marked.parse(data.answer)}</div>
     </div>
@@ -259,37 +274,32 @@ async function agentContinue() {
 // ── Agent v2 (LangGraph with Reflection) ──
 
 function renderAgentV2Thinking(data, el) {
-  const toolsSummary = data.tools_called.map(t =>
-    `<span style="background:#2d2d2d;padding:2px 8px;border-radius:4px;font-size:12px;">${t.name}(${JSON.stringify(t.args)})</span>`
-  ).join(" ");
-
+  const toolsSummary = renderToolChips(data.tools_called);
   const reflectionHtml = data.reflection ? renderReflection(data.reflection) : "";
-
   el.innerHTML = `
-    <div class="answer-card" style="border-left: 3px solid #7c3aed;">
+    <div class="answer-card v2">
       <strong>Agent v2 — Round ${data.round}</strong>
-      <div style="margin: 8px 0;">Tools called: ${toolsSummary}</div>
+      <div class="tool-row">Tools called: ${toolsSummary}</div>
       ${reflectionHtml}
     </div>
     ${data.sources.length ? renderSources(data.sources) : ""}
-    <div class="save-prompt" style="margin-top: 12px;">
-      <span style="font-size: 13px; color: #ccc;">Continue or stop here?</span>
-      <button class="btn-agent" style="padding: 6px 14px; font-size: 12px; margin-left: 8px; background:#7c3aed;" onclick="agentV2Continue()">Continue</button>
-      <button class="btn-secondary" style="padding: 6px 14px; font-size: 12px; margin-left: 4px;" onclick="agentV2Stop()">Stop & Answer</button>
-    </div>`;
+    ${renderDecisionPrompt("Continue or stop here?", "Continue", "btn-v2", "agentV2Continue()", "agentV2Stop()")}`;
 }
 
 function renderAgentV2Done(data, el) {
   const webUrls = data.sources.filter(s => s.url && s.url.startsWith("http"));
-  const saveBtn = webUrls.length ? `
-    <div class="save-prompt" style="margin-top: 12px;">
-      <span style="font-size: 13px; color: #ccc;">Save these web sources to DB?</span>
-      <button class="btn-agent" style="padding: 6px 14px; font-size: 12px; margin-left: 8px;" onclick="saveSourcesToDB(this)">Yes</button>
-      <button class="btn-secondary" style="padding: 6px 14px; font-size: 12px; margin-left: 4px;" onclick="this.parentElement.innerHTML='<span style=\\'font-size:13px;color:#888;\\'>Skipped.</span>'">No</button>
-    </div>` : "";
+  const saveBtn = webUrls.length
+    ? renderDecisionPrompt(
+        "Save these web sources to DB?",
+        "Yes",
+        "btn-agent",
+        "saveSourcesToDB(this)",
+        "this.parentElement.innerHTML='<span class=\\'prompt-note\\'>Skipped.</span>'",
+      )
+    : "";
   window._pendingSources = webUrls;
   el.innerHTML = `
-    <div class="answer-card" style="border-left: 3px solid #7c3aed;">
+    <div class="answer-card v2">
       <strong>Agent v2 Answer</strong>
       <div>${marked.parse(data.answer)}</div>
     </div>
@@ -372,20 +382,20 @@ async function queryStructured() {
     }
 
     const sectionsHtml = data.sections.map(s => `
-      <div class="answer-card" style="border-left: 3px solid #059669;">
-        <div style="margin-bottom: 8px;">
-          <strong style="color: #059669;">📍 ${s.section_path}</strong>
-          ${s.page ? `<span style="font-size: 12px; color: #888; margin-left: 8px;">Page ${s.page}</span>` : ""}
+      <div class="answer-card structured">
+        <div>
+          <strong class="section-path">${s.section_path}</strong>
+          ${s.page ? `<span class="page-tag">Page ${s.page}</span>` : ""}
         </div>
-        <div style="color: #ccc;">${marked.parse(s.content)}</div>
-        <div style="font-size: 12px; color: #666; margin-top: 8px;">Source: ${s.source}</div>
+        <div>${marked.parse(s.content)}</div>
+        <div class="source-tag">Source: ${s.source}</div>
       </div>
     `).join("");
 
     const tocHtml = data.toc ? `
-      <details style="margin-top: 12px;">
-        <summary style="color: #888; cursor: pointer; font-size: 13px;">Document TOC (${data.toc.length} sections)</summary>
-        <ul style="color: #888; font-size: 12px; margin-top: 4px;">
+      <details>
+        <summary>Document TOC (${data.toc.length} sections)</summary>
+        <ul class="toc-list">
           ${data.toc.map(t => `<li>${t}</li>`).join("")}
         </ul>
       </details>` : "";
